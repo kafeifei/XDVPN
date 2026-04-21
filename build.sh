@@ -24,8 +24,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN_PATH/XDVPN" "$APP/Contents/MacOS/XDVPN"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/Icon.png "$APP/Contents/Resources/Icon.png"
 
-# ad-hoc 签名
+# ad-hoc 签名（Icon.png 已就位，签名覆盖整个包）
 codesign --force --deep --sign - "$APP"
 
 echo ""

@@ -8,10 +8,6 @@ struct ContentView: View {
             Text("XDVPN")
                 .font(.headline)
 
-            if !vpn.sudoConfigured {
-                sudoBanner
-            }
-
             Picker("协议", selection: $vpn.protocolName) {
                 ForEach(OpenConnectRunner.protocols, id: \.self) { p in
                     Text(p).tag(p)
@@ -41,15 +37,28 @@ struct ContentView: View {
             Toggle("记住密码（存入 Keychain）", isOn: $vpn.rememberPassword)
                 .disabled(vpn.isConnected || vpn.isBusy)
 
-            HStack {
+            Divider()
+
+            // 单行状态：[圆点] [文案] [内联修复/配置按钮]
+            HStack(spacing: 8) {
                 Circle()
-                    .fill(vpn.isConnected ? .green : .secondary)
+                    .fill(dotColor(vpn.statusColor))
                     .frame(width: 8, height: 8)
                 Text(vpn.statusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                Spacer()
+                    .truncationMode(.tail)
+                Spacer(minLength: 4)
+                if !vpn.sudoConfigured {
+                    Button("一键配置") { vpn.installSudoers() }
+                        .controlSize(.small)
+                        .disabled(vpn.isBusy)
+                } else if vpn.needsRepair {
+                    Button("修复路由") { vpn.repairRoutes() }
+                        .controlSize(.small)
+                        .disabled(vpn.isBusy)
+                }
             }
 
             HStack {
@@ -67,6 +76,8 @@ struct ContentView: View {
                     if vpn.sudoConfigured {
                         Button("卸载免密 sudo 配置") { vpn.uninstallSudoers() }
                     }
+                    Button("手动修复路由") { vpn.repairRoutes() }
+                        .disabled(vpn.isBusy || !vpn.sudoConfigured)
                     Divider()
                     Button("退出 XDVPN") { NSApp.terminate(nil) }
                 } label: {
@@ -77,27 +88,16 @@ struct ContentView: View {
             }
         }
         .padding(14)
-        .frame(width: 320)
+        .frame(width: 340)
     }
 
-    private var sudoBanner: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("⚠️ 未配置免密 sudo")
-                .font(.caption.bold())
-            Text("配置后连接无弹窗。只允许 openconnect 一个二进制免密。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Button("一键配置") { vpn.installSudoers() }
-                .disabled(vpn.isBusy)
+    private func dotColor(_ d: StatusDot) -> Color {
+        switch d {
+        case .green: return .green
+        case .yellow: return .orange
+        case .red: return .red
+        case .gray: return .secondary
         }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.yellow.opacity(0.15))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(Color.yellow.opacity(0.5), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 
