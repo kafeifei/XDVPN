@@ -1,9 +1,18 @@
 #!/bin/bash
+# build.sh — 编译 + 打包 XDVPN.app
+# 用法：
+#   ./build.sh          # 只构建 .app
+#   ./build.sh release  # 构建 + 产出 XDVPN-<version>.zip（给 GitHub Release 用）
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-echo "==> swift build"
+MODE="${1:-app}"
+
+# 从 Info.plist 读版本号
+VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+
+echo "==> swift build (v$VERSION)"
 swift build -c release
 
 BIN_PATH="$(swift build -c release --show-bin-path)"
@@ -16,11 +25,20 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH/XDVPN" "$APP/Contents/MacOS/XDVPN"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-# ad-hoc 签名，绕过 Gatekeeper "App 已损坏" 提示
+# ad-hoc 签名
 codesign --force --deep --sign - "$APP"
 
 echo ""
 echo "✅ 构建完成：$APP"
+
+if [[ "$MODE" == "release" ]]; then
+    ZIP="build/XDVPN-v${VERSION}.zip"
+    rm -f "$ZIP"
+    # ditto 保留扩展属性和 ad-hoc 签名，比 zip 命令更可靠
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+    echo ""
+    echo "📦 Release zip：$ZIP ($(du -h "$ZIP" | cut -f1))"
+fi
+
 echo ""
 echo "运行： open $APP"
-echo "首次启动若被 Gatekeeper 拦截：右键 → 打开，或系统设置 → 隐私与安全性里放行。"

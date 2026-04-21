@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build release zip
+        run: ./build.sh release
+
+      - name: Extract version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: XDVPN ${{ github.ref_name }}
+          files: build/XDVPN-v${{ steps.ver.outputs.version }}.zip
+          generate_release_notes: true
+          body: |
+            ## 安装
+
+            1. 下载下面的 `XDVPN-${{ github.ref_name }}.zip` 并解压
+            2. 把 `XDVPN.app` 拖进 `/Applications/`
+            3. 首次打开被 Gatekeeper 拦截时：
+               - **方式 A**：在"系统设置 → 隐私与安全性"最下面点"仍要打开"
+               - **方式 B**：Finder 里右键 `XDVPN.app` → 打开 → 再点打开
+               - **方式 C**（终端）：`xattr -d com.apple.quarantine /Applications/XDVPN.app`
+            4. 菜单栏出现锁盾图标，点开，顶部黄条点"一键配置"免密 sudo（一次性）
+            5. 填协议/服务器/用户/密码，连接
+
+            ## 前置依赖
+
+            ```bash
+            brew install openconnect
+            ```
+
+            ## 说明
+
+            - **未经 Apple 公证**：个人自用项目，没有 $99/年 开发者账号。源码公开，可自行 `./build.sh` 从头构建。
+            - **macOS 14+**：MenuBarExtra window 模式需要 Sonoma 起

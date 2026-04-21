@@ -4,6 +4,22 @@
 
 为什么自己做：不信任闭源 VPN 客户端（如 Hillstone、AnyConnect Secure Client），但又烦每次手动敲 `sudo openconnect ...` 命令和输密码。
 
+## 下载
+
+直接下预编译版本：[Releases](https://github.com/kafeifei/XDVPN/releases/latest)
+
+或自己构建（见[构建](#构建)）。
+
+### 首次打开 Gatekeeper 拦截
+
+App 未经 Apple 公证（个人项目没 $99/年开发者账号），首次打开需要放行一次：
+
+- **方式 A**：系统设置 → 隐私与安全性 → 最下面"仍要打开"
+- **方式 B**：Finder 里右键 `XDVPN.app` → 打开 → 再点打开
+- **方式 C**：`xattr -d com.apple.quarantine /Applications/XDVPN.app`
+
+想完全规避这一步，就自己 clone 后 `./build.sh`，本地 ad-hoc 签名不会被 quarantine。
+
 ## 特性
 
 - **菜单栏常驻**：锁盾图标点开即弹窗，无 Dock 图标
@@ -22,11 +38,22 @@
 ## 构建
 
 ```bash
-./build.sh
+./build.sh              # 构建 .app
+./build.sh release      # 构建 + 产出 XDVPN-v<version>.zip
 open build/XDVPN.app
 ```
 
-`build.sh` 仅用 Swift Package Manager，无需 Xcode IDE。产物是 ad-hoc 签名的 `.app`，首次启动若被 Gatekeeper 拦：右键 → 打开 一次即可。
+`build.sh` 仅用 Swift Package Manager，无需 Xcode IDE（命令行工具够了）。产物是 ad-hoc 签名的 `.app`。
+
+### 发布新版本
+
+改 `Resources/Info.plist` 里的 `CFBundleShortVersionString`，然后：
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+GitHub Actions（`.github/workflows/release.yml`）会在 macOS runner 上自动构建、打包 zip、发 Release。
 
 ## 使用
 
