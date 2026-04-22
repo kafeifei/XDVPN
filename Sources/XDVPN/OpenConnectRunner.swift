@@ -5,8 +5,7 @@ enum VPNError: LocalizedError {
     case invalidProtocol
     case connectFailed(String)
     case sudoNotConfigured
-    case disconnectStuck
-    case repairFailed(String)
+    case cleanupFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -14,23 +13,25 @@ enum VPNError: LocalizedError {
         case .invalidProtocol: return "不支持的协议"
         case .connectFailed(let s): return "连接失败：\(s)"
         case .sudoNotConfigured: return "sudo 免密未配置或规则不完整，请重新点击\"一键配置\""
-        case .disconnectStuck: return "断开超时，路由可能未回收 — 点\"修复路由\""
-        case .repairFailed(let s): return "修复失败：\(s)"
+        case .cleanupFailed(let s): return "清理失败：\(s)"
         }
     }
 }
 
+/// 封装 openconnect 进程的生命周期。
+/// v0.3 相比 v0.2 的关键变化：
+/// 1) 用 `--script=xdvpn-route-script` 替代默认 vpnc-script
+///    → 路由改用 def1 技巧，系统原有 default route 永远不被碰
+/// 2) 不再 save/restore 原网关；cleanup 只删我们自己加过的东西
+/// 3) disconnect == cleanup，完全同一段代码（跑 xdvpn-cleanup helper）
+///    → 没有"修复路由"的概念，也没有分叉路径
 enum OpenConnectRunner {
+    /// openconnect 写的 pid 文件（/tmp，reboot 持久但 3 天无访问会被 periodic 清）
     static let pidPath = "/tmp/xdvpn.pid"
-    static let logPath = "/tmp/xdvpn.log"
-
-    /// 两个 root-owned helper。安装时 SudoersInstaller 把它们写进 /usr/local/libexec/，
-    /// 用户无写权限 → 加进 sudoers NOPASSWD 白名单安全。
-    static let stopHelperPath = "/usr/local/libexec/xdvpn-stop"
-    static let repairHelperPath = "/usr/local/libexec/xdvpn-repair"
 
     static let protocols = ["anyconnect", "nc", "gp", "pulse", "f5", "fortinet", "array"]
 
+    /// 在 Apple Silicon 和 Intel 两种 Homebrew 前缀中找
     static var openconnectPath: String? {
         for p in ["/opt/homebrew/bin/openconnect", "/usr/local/bin/openconnect"] {
             if FileManager.default.isExecutableFile(atPath: p) { return p }
@@ -38,6 +39,11 @@ enum OpenConnectRunner {
         return nil
     }
 
+    // MARK: - Connect
+
+    /// 启动 openconnect。--background 让它在建好隧道、跑完 route-script 之后再 fork。
+    /// 所以本函数返回 = 连接已建立 + session.state 已写好。
+    /// 调用线程：**不要**在 MainActor 上跑（会阻塞 UI）。
     static func connect(
         protocolName: String,
         server: String,
@@ -47,21 +53,19 @@ enum OpenConnectRunner {
         guard protocols.contains(protocolName) else { throw VPNError.invalidProtocol }
         guard let ocPath = openconnectPath else { throw VPNError.openconnectNotFound }
 
-        // 抓一份连接前的默认网关快照，写到 /tmp/xdvpn-saved-gw。
-        // xdvpn-repair 需要这个文件在 vpnc-script 状态丢失时恢复路由。
-        _ = RouteSnapshot.captureCurrentGateway()
-
+        // 清掉可能残留的旧 pid 文件（openconnect 会创建新的，但防御一下）
         try? FileManager.default.removeItem(atPath: pidPath)
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        // 重要：不用 --setuid。openconnect 必须保持 root，否则收到 SIGTERM 时
-        // 没权限跑 vpnc-script 回收路由，默认路由会留在已消失的 utun 上 → 全局断网。
+        // 所有参数由 arguments 传入，不经 shell，密码不会被日志捕获。
+        // 不用 --setuid：openconnect 必须保持 root 才能让我们的 script 动路由。
         proc.arguments = [
-            "-n",
+            "-n",                                            // 非交互；sudoers 没配会立刻失败
             ocPath,
             "--background",
             "--pid-file=" + pidPath,
+            "--script=" + SudoersInstaller.routeScriptPath,  // 关键：替换 vpnc-script
             "--protocol=" + protocolName,
             "--passwd-on-stdin",
             "--user=" + user,
@@ -73,9 +77,7 @@ enum OpenConnectRunner {
         let stderr = Pipe()
         proc.standardInput = stdin
         proc.standardError = stderr
-        proc.standardOutput = FileHandle(forWritingAtPath: logPath)
-            ?? { FileManager.default.createFile(atPath: logPath, contents: nil)
-                 return FileHandle(forWritingAtPath: logPath)! }()
+        // 不接 stdout —— openconnect 自己写 syslog，我们不需要另一份 log 文件
 
         do {
             try proc.run()
@@ -91,6 +93,7 @@ enum OpenConnectRunner {
         if proc.terminationStatus != 0 {
             let errData = stderr.fileHandleForReading.readDataToEndOfFile()
             let msg = String(data: errData, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
+            // sudo 拒绝 → 免密未配置
             if msg.contains("a password is required")
                 || msg.contains("sudo:")
                 || msg.contains("no tty present")
@@ -101,67 +104,37 @@ enum OpenConnectRunner {
         }
     }
 
-    /// 通过 root-owned helper 发 SIGTERM，等 vpnc-script 清理路由。
-    /// 15 秒不退就抛 disconnectStuck —— 调用方应该接着走 repair() 兜底。
-    /// 绝不 SIGKILL：那会跳过 vpnc-script，路由残留。
-    static func disconnect() throws {
-        guard let pid = currentPid() else {
-            // 没 pid 文件就没东西可断 —— 连带清理 gw 快照（不阻塞）
-            RouteSnapshot.clear()
-            return
-        }
+    // MARK: - Cleanup（== Disconnect）
 
+    /// 调 xdvpn-cleanup：停我们的 openconnect、清我们 session 里记下的一切。
+    /// 幂等、安全、可在任何时机反复调（启动时 / 用户点断开 / 合盖前）。
+    /// 调用线程：不要在 MainActor（阻塞最多 ~12s 等 vpnc-script 回收）。
+    static func cleanup() throws {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        proc.arguments = ["-n", stopHelperPath]
+        proc.arguments = ["-n", SudoersInstaller.cleanupPath]
         let errPipe = Pipe()
         proc.standardError = errPipe
         do {
             try proc.run()
             proc.waitUntilExit()
         } catch {
-            throw VPNError.connectFailed(error.localizedDescription)
-        }
-
-        for _ in 0..<150 {
-            if !isAlive(pid) { break }
-            usleep(100_000)
-        }
-        if isAlive(pid) {
-            throw VPNError.disconnectStuck
-        }
-        try? FileManager.default.removeItem(atPath: pidPath)
-        RouteSnapshot.clear()
-    }
-
-    /// 兜底修复：openconnect 死了/卡了/合盖后路由被毒、vpnc-script 状态丢 ——
-    /// xdvpn-repair 会强杀 openconnect、删 utun 默认路由、按快照恢复原网关、
-    /// 最后兜底 Wi-Fi 断电重连一次（Tunnelblick 的路数）。
-    static func repair() throws {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        proc.arguments = ["-n", repairHelperPath]
-        let out = Pipe()
-        let err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-        } catch {
-            throw VPNError.repairFailed(error.localizedDescription)
+            throw VPNError.cleanupFailed(error.localizedDescription)
         }
         if proc.terminationStatus != 0 {
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
             let msg =
                 String(data: errData, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 ?? "exit \(proc.terminationStatus)"
-            throw VPNError.repairFailed(msg.isEmpty ? "exit \(proc.terminationStatus)" : msg)
+            throw VPNError.cleanupFailed(msg.isEmpty ? "exit \(proc.terminationStatus)" : msg)
         }
-        try? FileManager.default.removeItem(atPath: pidPath)
-        RouteSnapshot.clear()
     }
+
+    /// disconnect 和 cleanup 是完全同义的。提供别名让调用方代码更易读。
+    static func disconnect() throws { try cleanup() }
+
+    // MARK: - Status query
 
     static func currentPid() -> pid_t? {
         guard let s = try? String(contentsOfFile: pidPath, encoding: .utf8) else { return nil }
@@ -169,6 +142,7 @@ enum OpenConnectRunner {
     }
 
     static func isAlive(_ pid: pid_t) -> Bool {
+        // kill 0 不发信号，只校验是否有权（EPERM 也算活着，只是非本用户）
         return kill(pid, 0) == 0 || errno == EPERM
     }
 

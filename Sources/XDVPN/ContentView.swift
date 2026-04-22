@@ -39,10 +39,10 @@ struct ContentView: View {
 
             Divider()
 
-            // 单行状态：[圆点] [文案] [内联修复/配置按钮]
+            // 单行状态：[圆点] [文案] [内联配置按钮，仅未配置时显示]
             HStack(spacing: 8) {
                 Circle()
-                    .fill(dotColor(vpn.statusColor))
+                    .fill(dotColor)
                     .frame(width: 8, height: 8)
                 Text(vpn.statusText)
                     .font(.caption)
@@ -52,10 +52,6 @@ struct ContentView: View {
                 Spacer(minLength: 4)
                 if !vpn.sudoConfigured {
                     Button("一键配置") { vpn.installSudoers() }
-                        .controlSize(.small)
-                        .disabled(vpn.isBusy)
-                } else if vpn.needsRepair {
-                    Button("修复路由") { vpn.repairRoutes() }
                         .controlSize(.small)
                         .disabled(vpn.isBusy)
                 }
@@ -76,8 +72,6 @@ struct ContentView: View {
                     if vpn.sudoConfigured {
                         Button("卸载免密 sudo 配置") { vpn.uninstallSudoers() }
                     }
-                    Button("手动修复路由") { vpn.repairRoutes() }
-                        .disabled(vpn.isBusy || !vpn.sudoConfigured)
                     Divider()
                     Button("退出 XDVPN") { NSApp.terminate(nil) }
                 } label: {
@@ -91,13 +85,11 @@ struct ContentView: View {
         .frame(width: 340)
     }
 
-    private func dotColor(_ d: StatusDot) -> Color {
-        switch d {
-        case .green: return .green
-        case .yellow: return .orange
-        case .red: return .red
-        case .gray: return .secondary
-        }
+    /// 状态点颜色：连上=绿、过渡中=橙、未连=灰。
+    private var dotColor: Color {
+        if vpn.isConnected { return .green }
+        if vpn.isBusy { return .orange }
+        return .secondary
     }
 }
 
