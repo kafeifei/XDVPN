@@ -23,6 +23,15 @@ final class VPNController: ObservableObject {
     @Published var password: String = ""
     @Published var rememberPassword: Bool = true
 
+    // MARK: - 分流（Split Tunnel）
+    /// 开关：打开 → 只把勾选/自定义的子网路由进 VPN；关 → def1 全流量
+    @Published var splitEnabled: Bool = false
+    @Published var splitPreset10: Bool = true      // 10.0.0.0/8
+    @Published var splitPreset172: Bool = true     // 172.16.0.0/12
+    @Published var splitPreset192: Bool = false    // 192.168.0.0/16（通常是本地 LAN）
+    /// 自定义 CIDR，多行/逗号分隔
+    @Published var splitCustom: String = ""
+
     // MARK: - 状态
 
     @Published private(set) var isConnected: Bool = false
@@ -66,6 +75,11 @@ final class VPNController: ObservableObject {
         d.set(server, forKey: "xdvpn.server")
         d.set(user, forKey: "xdvpn.user")
         d.set(rememberPassword, forKey: "xdvpn.remember")
+        d.set(splitEnabled, forKey: "xdvpn.split.enabled")
+        d.set(splitPreset10, forKey: "xdvpn.split.preset10")
+        d.set(splitPreset172, forKey: "xdvpn.split.preset172")
+        d.set(splitPreset192, forKey: "xdvpn.split.preset192")
+        d.set(splitCustom, forKey: "xdvpn.split.custom")
     }
 
     private func loadPrefs() {
@@ -74,8 +88,61 @@ final class VPNController: ObservableObject {
         server = d.string(forKey: "xdvpn.server") ?? ""
         user = d.string(forKey: "xdvpn.user") ?? ""
         rememberPassword = d.object(forKey: "xdvpn.remember") as? Bool ?? true
+        splitEnabled = d.object(forKey: "xdvpn.split.enabled") as? Bool ?? false
+        splitPreset10 = d.object(forKey: "xdvpn.split.preset10") as? Bool ?? true
+        splitPreset172 = d.object(forKey: "xdvpn.split.preset172") as? Bool ?? true
+        splitPreset192 = d.object(forKey: "xdvpn.split.preset192") as? Bool ?? false
+        splitCustom = d.string(forKey: "xdvpn.split.custom") ?? ""
         if rememberPassword, !user.isEmpty, !server.isEmpty {
             password = KeychainStore.load(account: keychainAccount) ?? ""
+        }
+    }
+
+    // MARK: - 分流
+
+    nonisolated static let splitConfPath = "/tmp/xdvpn-split.conf"
+
+    /// 按当前 UI 状态收集并校验 CIDR。非法的静默丢弃。
+    func collectSplitCIDRs() -> [String] {
+        var out: [String] = []
+        if splitPreset10 { out.append("10.0.0.0/8") }
+        if splitPreset172 { out.append("172.16.0.0/12") }
+        if splitPreset192 { out.append("192.168.0.0/16") }
+
+        let extras = splitCustom
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .filter(Self.isValidCIDR)
+        out.append(contentsOf: extras)
+
+        // 去重，保持顺序
+        var seen = Set<String>()
+        return out.filter { seen.insert($0).inserted }
+    }
+
+    /// 基础 CIDR 语法校验：X.X.X.X/N，N∈[0,32]，四段 0–255。
+    private static func isValidCIDR(_ s: String) -> Bool {
+        let parts = s.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let maskLen = Int(parts[1]),
+              (0...32).contains(maskLen) else { return false }
+        let octets = parts[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4 else { return false }
+        return octets.allSatisfy { seg in
+            if let n = Int(seg), (0...255).contains(n) { return true }
+            return false
+        }
+    }
+
+    /// 供 detached task 调用（非 MainActor）。enabled=false 或 cidrs 为空 → 删除旧文件。
+    nonisolated static func writeSplitConfFile(enabled: Bool, cidrs: [String]) {
+        let path = splitConfPath
+        if enabled, !cidrs.isEmpty {
+            let content = cidrs.joined(separator: "\n") + "\n"
+            try? content.write(toFile: path, atomically: true, encoding: .utf8)
+        } else {
+            try? FileManager.default.removeItem(atPath: path)
         }
     }
 
@@ -94,10 +161,16 @@ final class VPNController: ObservableObject {
         let p = protocolName, s = server, u = user, pw = password
         let remember = rememberPassword
         let account = keychainAccount
+        let splitOn = splitEnabled
+        let splitCIDRs = collectSplitCIDRs()
 
         Task.detached { [weak self] in
             // 先 cleanup 确保干净起点（即使启动时跑过，用户可能在期间手动 kill 过什么）
             try? OpenConnectRunner.cleanup()
+
+            // cleanup 会删 split conf；现在按当前 UI 状态重新写一遍
+            // 必须在 openconnect 启动之前，让路由脚本能读到
+            Self.writeSplitConfFile(enabled: splitOn, cidrs: splitCIDRs)
 
             // 连接
             let result: Result<Void, Error>
@@ -296,6 +369,8 @@ final class VPNController: ObservableObject {
     ) {
         Task.detached { [weak self] in
             try? OpenConnectRunner.cleanup()
+            // 兜底：cleanup helper 里也删了，这里再来一次无害
+            try? FileManager.default.removeItem(atPath: Self.splitConfPath)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 // 不改 isBusy —— 启动期间的 cleanup 是静默的，不应该锁 UI

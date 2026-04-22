@@ -5,7 +5,7 @@ import Foundation
 enum SudoersInstaller {
     /// 每次改 helper 脚本内容后递增。isInstalled 会校验磁盘上的版本号，
     /// 不匹配 → sudoConfigured=false → UI 自动提示"一键配置"覆盖升级。
-    static let helperVersion = 2
+    static let helperVersion = 3
 
     static let sudoersPath = "/etc/sudoers.d/xdvpn"
     static let helperDir = "/usr/local/libexec"
@@ -89,8 +89,36 @@ enum SudoersInstaller {
             fi
         fi
 
-        # 4) 劫持流量：def1（full tunnel）或 split（只劫持部分子网）
-        if [ -z "${CISCO_SPLIT_INC:-}" ]; then
+        # 4) 劫持流量：三档决策
+        #    a) 客户端分流（XDVPN 写的 split conf 文件存在）→ 走 conf 里的 CIDR
+        #       若同时有 CISCO_SPLIT_INC，合并（客户端 ∪ 服务器）
+        #    b) 仅服务器 split（只有 CISCO_SPLIT_INC）→ 走服务器推送
+        #    c) 都没有 → def1 全流量（两条 /1）
+        SPLIT_CONF="/tmp/xdvpn-split.conf"
+        if [ -f "$SPLIT_CONF" ] || [ -n "${CISCO_SPLIT_INC:-}" ]; then
+            # split tunnel —— 用户明确选择，不 fallback 到 def1
+            if [ -f "$SPLIT_CONF" ]; then
+                while IFS= read -r cidr || [ -n "$cidr" ]; do
+                    case "$cidr" in ""|"#"*) continue ;; esac
+                    if route add -net "$cidr" -interface "$TUNDEV" 2>/dev/null; then
+                        append_state "ROUTE_NET=$cidr"
+                    fi
+                done < "$SPLIT_CONF"
+            fi
+            if [ -n "${CISCO_SPLIT_INC:-}" ]; then
+                i=0
+                while true; do
+                    eval "addr=\${CISCO_SPLIT_INC_${i}_ADDR:-}"
+                    eval "masklen=\${CISCO_SPLIT_INC_${i}_MASKLEN:-}"
+                    [ -z "$addr" ] && break
+                    # route add 重复会失败（2>/dev/null 吃掉），自然去重
+                    if route add -net "$addr/$masklen" -interface "$TUNDEV" 2>/dev/null; then
+                        append_state "ROUTE_NET=$addr/$masklen"
+                    fi
+                    i=$((i + 1))
+                done
+            fi
+        else
             # full tunnel — 两条 /1 覆盖 default，不删不改原 default
             if route add -net 0.0.0.0/1 -interface "$TUNDEV" 2>/dev/null; then
                 append_state "ROUTE_NET=0.0.0.0/1"
@@ -98,18 +126,6 @@ enum SudoersInstaller {
             if route add -net 128.0.0.0/1 -interface "$TUNDEV" 2>/dev/null; then
                 append_state "ROUTE_NET=128.0.0.0/1"
             fi
-        else
-            # split tunnel — 逐个子网
-            i=0
-            while true; do
-                eval "addr=\${CISCO_SPLIT_INC_${i}_ADDR:-}"
-                eval "masklen=\${CISCO_SPLIT_INC_${i}_MASKLEN:-}"
-                [ -z "$addr" ] && break
-                if route add -net "$addr/$masklen" -interface "$TUNDEV" 2>/dev/null; then
-                    append_state "ROUTE_NET=$addr/$masklen"
-                fi
-                i=$((i + 1))
-            done
         fi
 
         # 5) DNS — 通过 scutil 注入 VPN 的 resolver，用固定 key
@@ -248,6 +264,9 @@ enum SudoersInstaller {
 
         rm -f "$SESSION"
     fi
+
+    # 3) 清掉分流配置文件（下次连接会由 XDVPN 按当前 UI 状态重新写）
+    rm -f "/tmp/xdvpn-split.conf"
 
     exit 0
     """#

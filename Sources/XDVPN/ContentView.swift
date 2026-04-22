@@ -37,6 +37,35 @@ struct ContentView: View {
             Toggle("记住密码（存入 Keychain）", isOn: $vpn.rememberPassword)
                 .disabled(vpn.isConnected || vpn.isBusy)
 
+            Toggle("分流模式（仅指定子网走 VPN）", isOn: $vpn.splitEnabled)
+                .disabled(vpn.isConnected || vpn.isBusy)
+
+            if vpn.splitEnabled {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("常见内网段")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("10.0.0.0/8", isOn: $vpn.splitPreset10)
+                        .font(.caption)
+                    Toggle("172.16.0.0/12", isOn: $vpn.splitPreset172)
+                        .font(.caption)
+                    Toggle("192.168.0.0/16（可能覆盖本地网络，慎选）", isOn: $vpn.splitPreset192)
+                        .font(.caption)
+
+                    Text("自定义 CIDR（逗号或换行分隔）")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    TextEditor(text: $vpn.splitCustom)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(height: 48)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                        )
+                }
+                .padding(.leading, 12)
+                .disabled(vpn.isConnected || vpn.isBusy)
+            }
+
             Divider()
 
             // 单行状态：[圆点] [文案]
