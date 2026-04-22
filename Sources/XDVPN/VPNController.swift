@@ -34,6 +34,9 @@ final class VPNController: ObservableObject {
 
     private var pollTimer: Timer?
     private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    /// 睡前是否连着 → 醒来自动重连
+    private var shouldReconnectAfterWake = false
 
     init() {
         loadPrefs()
@@ -48,9 +51,9 @@ final class VPNController: ObservableObject {
 
     deinit {
         pollTimer?.invalidate()
-        if let obs = sleepObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(obs)
-        }
+        let nc = NSWorkspace.shared.notificationCenter
+        if let obs = sleepObserver { nc.removeObserver(obs) }
+        if let obs = wakeObserver { nc.removeObserver(obs) }
     }
 
     // MARK: - Preferences / Keychain
@@ -220,9 +223,16 @@ final class VPNController: ObservableObject {
             forName: NSWorkspace.willSleepNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
-            // 必须在 MainActor 上；addObserver 的 queue: .main 保证了
             MainActor.assumeIsolated {
                 self?.handleWillSleep()
+            }
+        }
+        wakeObserver = nc.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleDidWake()
             }
         }
     }
@@ -230,11 +240,47 @@ final class VPNController: ObservableObject {
     private func handleWillSleep() {
         // willSleep 通知给应用 ~20s 窗口。cleanup 最多 12s，够用。
         // 只在确实连着 + sudo 已配 的情况下清；其他情况 noop 就行。
+        shouldReconnectAfterWake = isConnected
         guard sudoConfigured, isConnected || OpenConnectRunner.isRunning else { return }
         // 同步跑（阻塞主线程，屏幕要黑掉了 UI 阻塞无所谓）
         try? OpenConnectRunner.cleanup()
         isConnected = false
         statusText = "未连接"
+    }
+
+    private func handleDidWake() {
+        // 唤醒后 openconnect 进程可能还活着，但 VPN 服务端 session 已超时、
+        // TLS/DTLS 连接已断，隧道实际是黑洞。进程活着 ≠ 隧道通。
+        // 先 cleanup 清残留，再根据睡前状态决定是否自动重连。
+        let shouldReconnect = shouldReconnectAfterWake
+        shouldReconnectAfterWake = false
+
+        guard sudoConfigured else { return }
+
+        if isConnected || OpenConnectRunner.isRunning {
+            isBusy = true
+            statusText = "休眠唤醒，正在清理…"
+            runCleanupDetached(reason: "唤醒后清理残留隧道") { [weak self] in
+                guard let self else { return }
+                self.isConnected = false
+                self.isBusy = false
+                self.statusText = "未连接"
+                if shouldReconnect { self.reconnectAfterWake() }
+            }
+        } else if shouldReconnect {
+            // willSleep 已经清干净了，直接重连
+            reconnectAfterWake()
+        }
+    }
+
+    /// 唤醒后自动重连。需要凭据齐全才尝试，否则静默跳过（用户手动点连接就行）。
+    private func reconnectAfterWake() {
+        guard !server.isEmpty, !user.isEmpty, !password.isEmpty else {
+            statusText = "未连接（缺少凭据，请手动连接）"
+            return
+        }
+        statusText = "正在自动重连…"
+        connect()
     }
 
     // MARK: - Internal helpers
