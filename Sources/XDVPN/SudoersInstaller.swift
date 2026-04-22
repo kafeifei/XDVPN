@@ -74,7 +74,9 @@ enum SudoersInstaller {
 
         # 3) VPN 服务器自身的 host route：保证去 VPN server 的 TCP/DTLS 包走物理网卡
         #    不然它会被我们加的 /1 路由吸进 utun，环路
-        ORIG_GW="$(route -n get default 2>/dev/null | awk '/gateway:/{print $2}' | tr -d ' ')"
+        #    注意：必须从物理网卡（en*）取网关，不能用 route -n get default ——
+        #    openconnect 调脚本前可能已在 utun 上建了 default，会取到 VPN 内部网关
+        ORIG_GW="$(netstat -rn 2>/dev/null | awk '/^default[[:space:]].*[[:space:]]en[0-9]/{print $2; exit}')"
         if [ -n "$ORIG_GW" ]; then
             if route add -host "$VPNGATEWAY" "$ORIG_GW" 2>/dev/null; then
                 append_state "ROUTE_HOST=$VPNGATEWAY"
@@ -117,7 +119,8 @@ enum SudoersInstaller {
             scutil <<SCUTIL_EOF
     d.init
     d.add ServerAddresses ${DNS_VALUES}
-    d.add SupplementalMatchDomains * ${DOMAIN}
+    d.add SupplementalMatchDomains *
+    ${DOMAIN:+d.add SearchDomains * ${DOMAIN}}
     set ${SCUTIL_KEY}
     quit
     SCUTIL_EOF
