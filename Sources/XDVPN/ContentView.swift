@@ -39,7 +39,7 @@ struct ContentView: View {
 
             Divider()
 
-            // 单行状态：[圆点] [文案] [内联配置按钮，仅未配置时显示]
+            // 单行状态：[圆点] [文案]
             HStack(spacing: 8) {
                 Circle()
                     .fill(dotColor)
@@ -50,16 +50,15 @@ struct ContentView: View {
                     .lineLimit(2)
                     .truncationMode(.tail)
                 Spacer(minLength: 4)
-                if !vpn.sudoConfigured {
-                    Button("一键配置") { vpn.installSudoers() }
-                        .controlSize(.small)
-                        .disabled(vpn.isBusy)
-                }
             }
 
             HStack {
                 if vpn.isConnected {
                     Button("断开") { vpn.disconnect() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(vpn.isBusy)
+                } else if !vpn.sudoConfigured {
+                    Button("一键配置") { vpn.installSudoers(thenConnect: true) }
                         .keyboardShortcut(.defaultAction)
                         .disabled(vpn.isBusy)
                 } else {

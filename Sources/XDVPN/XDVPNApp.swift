@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 
-@main
 struct XDVPNApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var controller = VPNController()

@@ -3,6 +3,10 @@ import Foundation
 /// 一次性把免密 sudo + 两个 root helper 装进系统。
 /// helper 是固定行为、root 所有、用户不可写，所以放进 sudoers NOPASSWD 白名单是安全的。
 enum SudoersInstaller {
+    /// 每次改 helper 脚本内容后递增。isInstalled 会校验磁盘上的版本号，
+    /// 不匹配 → sudoConfigured=false → UI 自动提示"一键配置"覆盖升级。
+    static let helperVersion = 2
+
     static let sudoersPath = "/etc/sudoers.d/xdvpn"
     static let helperDir = "/usr/local/libexec"
 
@@ -24,16 +28,18 @@ enum SudoersInstaller {
 
     // MARK: - 安装状态
 
-    /// 四件事都对才算已安装：
+    /// 三个条件全满足才算已安装：
     /// - sudoers 文件存在
-    /// - 两个 helper 文件都存在且 shebang 签名匹配（防篡改/版本错配）
+    /// - 两个 helper 文件都存在
+    /// - helper 的版本号 == helperVersion（脚本内容更新后自动触发重装）
     static var isInstalled: Bool {
         let fm = FileManager.default
         guard fm.fileExists(atPath: sudoersPath),
               fm.fileExists(atPath: routeScriptPath),
               fm.fileExists(atPath: cleanupPath) else { return false }
-        return helperHasSignature(routeScriptPath, signature: "#!/bin/bash\n# xdvpn-route-script")
-            && helperHasSignature(cleanupPath, signature: "#!/bin/bash\n# xdvpn-cleanup")
+        let ver = "v\(helperVersion)"
+        return helperHasSignature(routeScriptPath, signature: "#!/bin/bash\n# xdvpn-route-script \(ver)")
+            && helperHasSignature(cleanupPath, signature: "#!/bin/bash\n# xdvpn-cleanup \(ver)")
     }
 
     private static func helperHasSignature(_ path: String, signature: String) -> Bool {
@@ -51,7 +57,7 @@ enum SudoersInstaller {
     /// 原则：只做加法 + 删自己加的；从不碰系统原有的 default route / DNS / 其他接口。
     private static let routeScriptContent = #"""
     #!/bin/bash
-    # xdvpn-route-script — 由 XDVPN 安装。root:wheel 0755，用户不可写。
+    # xdvpn-route-script v\#(helperVersion) — 由 XDVPN 安装。root:wheel 0755，用户不可写。
     # 被 openconnect --script 调用，替代 vpnc-script。
     # 设计原则：只做加法。永远不 touch 系统原有的 default route。
     set -u
@@ -119,7 +125,7 @@ enum SudoersInstaller {
             scutil <<SCUTIL_EOF
     d.init
     d.add ServerAddresses ${DNS_VALUES}
-    d.add SupplementalMatchDomains *
+    d.add SupplementalMatchDomains * ""
     ${DOMAIN:+d.add SearchDomains * ${DOMAIN}}
     set ${SCUTIL_KEY}
     quit
@@ -177,7 +183,7 @@ enum SudoersInstaller {
     /// 幂等：每步失败跳过。永远不扩展到 session 以外的东西。
     private static let cleanupScriptContent = #"""
     #!/bin/bash
-    # xdvpn-cleanup — 由 XDVPN 安装。root:wheel 0755。
+    # xdvpn-cleanup v\#(helperVersion) — 由 XDVPN 安装。root:wheel 0755。
     # 用户通过 sudoers NOPASSWD 调用。
     # 功能：按 /tmp/xdvpn.pid + /tmp/xdvpn.session 清掉我们自己上次加的所有东西。
     # 原则：只动自己的 pid、自己的 session 里列出的东西；其他一概不碰。

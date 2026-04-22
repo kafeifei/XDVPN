@@ -157,7 +157,7 @@ final class VPNController: ObservableObject {
 
     // MARK: - Sudo helpers
 
-    func installSudoers() {
+    func installSudoers(thenConnect: Bool = false) {
         isBusy = true
         Task.detached { [weak self] in
             let errMsg: String? = {
@@ -173,6 +173,10 @@ final class VPNController: ObservableObject {
                 // 装完之后立刻跑一次 cleanup，顺手把 v0.2 残余（如果有）也清了
                 if self.sudoConfigured {
                     self.runCleanupDetached(reason: "安装后首次清理")
+                }
+                // 配置成功 + 凭据齐全 → 自动连接
+                if thenConnect, self.canConnect {
+                    self.connect()
                 }
             }
         }
