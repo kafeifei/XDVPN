@@ -3,6 +3,7 @@ import SwiftUI
 
 @main
 struct XDVPNApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var controller = VPNController()
 
     var body: some Scene {
@@ -26,6 +27,26 @@ struct XDVPNApp: App {
 /// 返回一个预先调好 size 和 isTemplate 的 NSImage，供 MenuBarExtra 使用。
 /// 1000×1000 的源图缩到 18×18 逻辑点，菜单栏高度 22pt 合适。
 /// 找不到 Icon.png 时回退到 SF Symbol lock.shield 保底可见。
+/// 拦截退出，先清理 VPN 残留再真正退出。
+/// 用 .terminateLater + reply 的标准 Cocoa 模式，不阻塞 RunLoop。
+class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // 如果 sudoers 没配或 openconnect 没在跑，直接退出（cleanup helper 不存在或无事可做）
+        guard SudoersInstaller.isInstalled,
+              OpenConnectRunner.isRunning else {
+            return .terminateNow
+        }
+        // 后台跑 cleanup，完成后再回来退出
+        DispatchQueue.global(qos: .userInitiated).async {
+            try? OpenConnectRunner.cleanup()
+            DispatchQueue.main.async {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+}
+
 private func menuBarImage(connected: Bool) -> NSImage {
     // 先 copy 再改属性，避免污染 Bundle 缓存的单例 NSImage —— 否则
     // 一个状态改了 size/isTemplate，下次用另一种状态读回来就错了。
