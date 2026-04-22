@@ -2,7 +2,7 @@
 
 极简 macOS 菜单栏 VPN 客户端，openconnect 的 GUI 包装。
 
-不信任闭源 VPN 客户端，又烦每次手敲 `sudo openconnect ...`，所以自己做了一个。
+不信任闭源 VPN 客户端，又烦每次手敲 `sudo openconnect ...` 和输密码，而且 openconnect 命令行不能保存密码，所以自己做了一个。
 
 ## 特性
 
