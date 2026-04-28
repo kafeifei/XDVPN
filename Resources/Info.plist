@@ -2,33 +2,33 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
-    <key>CFBundleExecutable</key>
-    <string>XDVPN</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.kafeifei.xdvpn</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>XDVPN</string>
-    <key>CFBundleDisplayName</key>
-    <string>XDVPN</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.1.0</string>
-    <key>CFBundleVersion</key>
-    <string>8</string>
-    <key>CFBundleIconFile</key>
-    <string>Icon</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSFaceIDUsageDescription</key>
-    <string>用 Touch ID 解锁 XDVPN 连接权限</string>
-    <key>NSHumanReadableCopyright</key>
-    <string>© Kafeifei</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>XDVPN</string>
+	<key>CFBundleExecutable</key>
+	<string>XDVPN</string>
+	<key>CFBundleIconFile</key>
+	<string>Icon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.kafeifei.xdvpn</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>XDVPN</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>8</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSFaceIDUsageDescription</key>
+	<string>用 Touch ID 解锁 XDVPN 连接权限</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© Kafeifei</string>
 </dict>
 </plist>

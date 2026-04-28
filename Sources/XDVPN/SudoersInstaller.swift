@@ -5,7 +5,7 @@ import Foundation
 enum SudoersInstaller {
     /// 每次改 helper 脚本内容后递增。isInstalled 会校验磁盘上的版本号，
     /// 不匹配 → sudoConfigured=false → UI 自动提示"一键配置"覆盖升级。
-    static let helperVersion = 3
+    static let helperVersion = 4
 
     static let sudoersPath = "/etc/sudoers.d/xdvpn"
     static let helperDir = "/usr/local/libexec"
@@ -17,6 +17,7 @@ enum SudoersInstaller {
     /// 用户 sudo 直接调，做上次会话的清理。
     /// 走 sudoers NOPASSWD。
     static let cleanupPath = "\(helperDir)/xdvpn-cleanup"
+    static let dnsProxyPath = "\(helperDir)/xdvpn-dns-proxy"
 
     /// v0.2 的 helper，v0.3 安装时顺手删掉（用户从 0.2 升级时的清理）
     private static let legacyPaths = [
@@ -36,7 +37,8 @@ enum SudoersInstaller {
         let fm = FileManager.default
         guard fm.fileExists(atPath: sudoersPath),
               fm.fileExists(atPath: routeScriptPath),
-              fm.fileExists(atPath: cleanupPath) else { return false }
+              fm.fileExists(atPath: cleanupPath),
+              fm.fileExists(atPath: dnsProxyPath) else { return false }
         let ver = "v\(helperVersion)"
         return helperHasSignature(routeScriptPath, signature: "#!/bin/bash\n# xdvpn-route-script \(ver)")
             && helperHasSignature(cleanupPath, signature: "#!/bin/bash\n# xdvpn-cleanup \(ver)")
@@ -95,7 +97,8 @@ enum SudoersInstaller {
         #    b) 仅服务器 split（只有 CISCO_SPLIT_INC）→ 走服务器推送
         #    c) 都没有 → def1 全流量（两条 /1）
         SPLIT_CONF="/tmp/xdvpn-split.conf"
-        if [ -f "$SPLIT_CONF" ] || [ -n "${CISCO_SPLIT_INC:-}" ]; then
+        DOMAIN_CONF="/tmp/xdvpn-split-domains.conf"
+        if [ -f "$SPLIT_CONF" ] || [ -f "$DOMAIN_CONF" ] || [ -n "${CISCO_SPLIT_INC:-}" ]; then
             # split tunnel —— 用户明确选择，不 fallback 到 def1
             if [ -f "$SPLIT_CONF" ]; then
                 while IFS= read -r cidr || [ -n "$cidr" ]; do
@@ -128,11 +131,19 @@ enum SudoersInstaller {
             fi
         fi
 
-        # 5) DNS — 通过 scutil 注入 VPN 的 resolver，用固定 key
-        #    单实例 App，key 固定即可（不用 UUID）
-        SCUTIL_KEY="State:/Network/Service/com.kafeifei.xdvpn/DNS"
-        if [ -n "${INTERNAL_IP4_DNS:-}" ]; then
-            # 空格分隔的 DNS server 列表 → scutil 的 "* <ip1> <ip2>..." 语法
+        # 5) DNS
+        if [ -f "$DOMAIN_CONF" ] && [ -n "${INTERNAL_IP4_DNS:-}" ]; then
+            # 域名分流：fork dns-proxy，不做全局 DNS 注入
+            VPN_DNS=$(echo "$INTERNAL_IP4_DNS" | awk '{print $1}')
+            DNS_PROXY="/usr/local/libexec/xdvpn-dns-proxy"
+            if [ -x "$DNS_PROXY" ]; then
+                nohup "$DNS_PROXY" --vpn-dns "$VPN_DNS" --utun "$TUNDEV" \
+                    --domains "$DOMAIN_CONF" </dev/null >/dev/null 2>&1 &
+                append_state "DNS_PROXY_PID=$!"
+            fi
+        elif [ -n "${INTERNAL_IP4_DNS:-}" ]; then
+            # 原有全局 DNS 注入（无域名分流时）
+            SCUTIL_KEY="State:/Network/Service/com.kafeifei.xdvpn/DNS"
             DNS_VALUES="*"
             for d in $INTERNAL_IP4_DNS; do
                 DNS_VALUES="$DNS_VALUES $d"
@@ -154,6 +165,19 @@ enum SudoersInstaller {
         # openconnect 正常退出时走这里。逐项 remove 我们加的东西。
         # xdvpn-cleanup 崩溃恢复时做同样的事（冗余是故意的）。
         if [ -f "$SESSION" ]; then
+            # Kill dns-proxy
+            while IFS='=' read -r tag val; do
+                if [ "$tag" = "DNS_PROXY_PID" ]; then
+                    kill -TERM "$val" 2>/dev/null || true
+                    for _ in $(seq 1 10); do
+                        kill -0 "$val" 2>/dev/null || break
+                        sleep 0.1
+                    done
+                fi
+            done < "$SESSION"
+            # 兜底：清理可能残留的 resolver 文件
+            grep -rl 'nameserver 127.0.0.1' /etc/resolver/ 2>/dev/null | xargs rm -f 2>/dev/null || true
+
             # DNS
             KEY=""
             while IFS='=' read -r tag val; do
@@ -228,6 +252,21 @@ enum SudoersInstaller {
         fi
         rm -f "$PID_FILE"
     fi
+
+    # 停 dns-proxy（从 session 读 PID）
+    if [ -f "$SESSION" ]; then
+        while IFS='=' read -r tag val; do
+            if [ "$tag" = "DNS_PROXY_PID" ]; then
+                kill -TERM "$val" 2>/dev/null || true
+                for _ in $(seq 1 10); do
+                    kill -0 "$val" 2>/dev/null || break
+                    sleep 0.1
+                done
+                kill -KILL "$val" 2>/dev/null || true
+            fi
+        done < "$SESSION"
+    fi
+
     # openconnect 退出 → kernel close tun fd → utun 销毁 → interface-scoped 路由自动跟着清掉
 
     # 2) 如果 disconnect script 没跑完（openconnect 被 SIGKILL / crash），手动清残留
@@ -266,7 +305,9 @@ enum SudoersInstaller {
     fi
 
     # 3) 清掉分流配置文件（下次连接会由 XDVPN 按当前 UI 状态重新写）
-    rm -f "/tmp/xdvpn-split.conf"
+    # 兜底：清理可能残留的 resolver 文件
+    grep -rl 'nameserver 127.0.0.1' /etc/resolver/ 2>/dev/null | xargs rm -f 2>/dev/null || true
+    rm -f "/tmp/xdvpn-split.conf" "/tmp/xdvpn-split-domains.conf"
 
     exit 0
     """#
@@ -287,6 +328,9 @@ enum SudoersInstaller {
         \(user) ALL=(root) NOPASSWD: \(ocPath)
         \(user) ALL=(root) NOPASSWD: \(cleanupPath)
         """
+
+        let bundleBinDir = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS").path
+        let proxySourcePath = bundleBinDir + "/xdvpn-dns-proxy"
 
         let shell = """
         set -eu
@@ -314,7 +358,12 @@ enum SudoersInstaller {
         chmod 0755 "$CL_TMP"
         mv "$CL_TMP" '\(cleanupPath)'
 
-        # 3) sudoers（visudo -c 严格校验通过才落盘）
+        # 3) xdvpn-dns-proxy（编译好的二进制，从 app bundle 复制）
+        cp '\(proxySourcePath)' '\(dnsProxyPath)'
+        chown root:wheel '\(dnsProxyPath)'
+        chmod 0755 '\(dnsProxyPath)'
+
+        # 4) sudoers（visudo -c 严格校验通过才落盘）
         SU_TMP=$(mktemp)
         cat > "$SU_TMP" <<'XDVPN_SUDOERS_EOF'
         \(sudoersRule)
@@ -338,7 +387,7 @@ enum SudoersInstaller {
     }
 
     static func uninstall() throws {
-        let paths = [sudoersPath, routeScriptPath, cleanupPath] + legacyPaths
+        let paths = [sudoersPath, routeScriptPath, cleanupPath, dnsProxyPath] + legacyPaths
         let shell = "rm -f " + paths.map { "'\($0)'" }.joined(separator: " ")
         let script = "do shell script \(appleScriptQuote(shell)) with administrator privileges"
         var err: NSDictionary?

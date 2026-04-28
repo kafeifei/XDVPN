@@ -61,6 +61,17 @@ struct ContentView: View {
                             RoundedRectangle(cornerRadius: 4)
                                 .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
                         )
+
+                    Text("域名分流（一行一个域名后缀）")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                    TextEditor(text: $vpn.splitDomains)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(height: 48)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                        )
                 }
                 .padding(.leading, 12)
                 .disabled(vpn.isConnected || vpn.isBusy)

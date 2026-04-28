@@ -23,6 +23,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN_PATH/XDVPN" "$APP/Contents/MacOS/XDVPN"
+cp "$BIN_PATH/xdvpn-dns-proxy" "$APP/Contents/MacOS/xdvpn-dns-proxy"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/Icon.png "$APP/Contents/Resources/Icon.png"
 

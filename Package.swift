@@ -8,6 +8,10 @@ let package = Package(
         .executableTarget(
             name: "XDVPN",
             path: "Sources/XDVPN"
-        )
+        ),
+        .executableTarget(
+            name: "xdvpn-dns-proxy",
+            path: "Sources/xdvpn-dns-proxy"
+        ),
     ]
 )

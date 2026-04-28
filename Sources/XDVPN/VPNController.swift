@@ -31,6 +31,8 @@ final class VPNController: ObservableObject {
     @Published var splitPreset192: Bool = false    // 192.168.0.0/16（通常是本地 LAN）
     /// 自定义 CIDR，多行/逗号分隔
     @Published var splitCustom: String = ""
+    /// 域名分流后缀列表，一行一个（如 xindong.com），匹配该域名及所有子域名
+    @Published var splitDomains: String = ""
 
     // MARK: - 状态
 
@@ -80,6 +82,7 @@ final class VPNController: ObservableObject {
         d.set(splitPreset172, forKey: "xdvpn.split.preset172")
         d.set(splitPreset192, forKey: "xdvpn.split.preset192")
         d.set(splitCustom, forKey: "xdvpn.split.custom")
+        d.set(splitDomains, forKey: "xdvpn.split.domains")
     }
 
     private func loadPrefs() {
@@ -93,6 +96,7 @@ final class VPNController: ObservableObject {
         splitPreset172 = d.object(forKey: "xdvpn.split.preset172") as? Bool ?? true
         splitPreset192 = d.object(forKey: "xdvpn.split.preset192") as? Bool ?? false
         splitCustom = d.string(forKey: "xdvpn.split.custom") ?? ""
+        splitDomains = d.string(forKey: "xdvpn.split.domains") ?? ""
         if rememberPassword, !user.isEmpty, !server.isEmpty {
             password = KeychainStore.load(account: keychainAccount) ?? ""
         }
@@ -101,6 +105,7 @@ final class VPNController: ObservableObject {
     // MARK: - 分流
 
     nonisolated static let splitConfPath = "/tmp/xdvpn-split.conf"
+    nonisolated static let domainConfPath = "/tmp/xdvpn-split-domains.conf"
 
     /// 按当前 UI 状态收集并校验 CIDR。非法的静默丢弃。
     func collectSplitCIDRs() -> [String] {
@@ -119,6 +124,26 @@ final class VPNController: ObservableObject {
         // 去重，保持顺序
         var seen = Set<String>()
         return out.filter { seen.insert($0).inserted }
+    }
+
+    func collectDomainSuffixes() -> [String] {
+        var seen = Set<String>()
+        return splitDomains
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .map { $0.hasPrefix("*.") ? String($0.dropFirst(2)) : $0 }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") && Self.isValidDomainSuffix($0) }
+            .filter { seen.insert($0).inserted }
+    }
+
+    private static func isValidDomainSuffix(_ s: String) -> Bool {
+        let labels = s.split(separator: ".", omittingEmptySubsequences: false)
+        guard !labels.isEmpty else { return false }
+        return labels.allSatisfy { label in
+            !label.isEmpty && label.count <= 63
+                && label.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+                && !label.hasPrefix("-") && !label.hasSuffix("-")
+        }
     }
 
     /// 基础 CIDR 语法校验：X.X.X.X/N，N∈[0,32]，四段 0–255。
@@ -146,6 +171,16 @@ final class VPNController: ObservableObject {
         }
     }
 
+    nonisolated static func writeDomainConfFile(enabled: Bool, domains: [String]) {
+        let path = domainConfPath
+        if enabled, !domains.isEmpty {
+            let content = domains.joined(separator: "\n") + "\n"
+            try? content.write(toFile: path, atomically: true, encoding: .utf8)
+        } else {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+    }
+
     var canConnect: Bool {
         sudoConfigured && !server.isEmpty && !user.isEmpty && !password.isEmpty
             && !isBusy && !isConnected
@@ -163,6 +198,7 @@ final class VPNController: ObservableObject {
         let account = keychainAccount
         let splitOn = splitEnabled
         let splitCIDRs = collectSplitCIDRs()
+        let domainSuffixes = collectDomainSuffixes()
 
         Task.detached { [weak self] in
             // 先 cleanup 确保干净起点（即使启动时跑过，用户可能在期间手动 kill 过什么）
@@ -171,6 +207,7 @@ final class VPNController: ObservableObject {
             // cleanup 会删 split conf；现在按当前 UI 状态重新写一遍
             // 必须在 openconnect 启动之前，让路由脚本能读到
             Self.writeSplitConfFile(enabled: splitOn, cidrs: splitCIDRs)
+            Self.writeDomainConfFile(enabled: splitOn, domains: domainSuffixes)
 
             // 连接
             let result: Result<Void, Error>
@@ -371,6 +408,7 @@ final class VPNController: ObservableObject {
             try? OpenConnectRunner.cleanup()
             // 兜底：cleanup helper 里也删了，这里再来一次无害
             try? FileManager.default.removeItem(atPath: Self.splitConfPath)
+            try? FileManager.default.removeItem(atPath: Self.domainConfPath)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 // 不改 isBusy —— 启动期间的 cleanup 是静默的，不应该锁 UI
