@@ -243,10 +243,32 @@ let (upstreamSock, upstreamAddr) = createUpstreamSocket(vpnDNS: config.vpnDNS)
 var routeCache = Set<String>()
 var recvBuf = [UInt8](repeating: 0, count: 65535)
 
+// 心跳：用独立 socket 每 30s 往 VPN DNS 发一个 dummy DNS 查询，
+// 产生隧道 UDP 流量防止服务端 idle timeout。
+let keepaliveSock = socket(AF_INET, SOCK_DGRAM, 0)
+var lastUpstream = time(nil)
+let keepaliveInterval: Int = 30
+var keepaliveQuery: [UInt8] = [
+    0xBE, 0xEF, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00, 0x01,  // query "." A IN
+]
+
+func sendKeepalive() {
+    var dst = upstreamAddr
+    withUnsafePointer(to: &dst) { p in
+        p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            _ = sendto(keepaliveSock, &keepaliveQuery, keepaliveQuery.count, 0,
+                       sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+}
+
 func cleanup() {
     deleteResolverFiles(for: suffixes)
     close(listenerSock)
     close(upstreamSock)
+    close(keepaliveSock)
 }
 
 // Main loop
@@ -257,6 +279,7 @@ while terminated == 0 {
     if terminated != 0 { break }
 
     if pollResult > 0, pfd.revents & Int16(POLLIN) != 0 {
+        lastUpstream = time(nil)
         var clientAddr = sockaddr_in()
         var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
 
@@ -315,6 +338,12 @@ while terminated == 0 {
             cleanup()
             exit(0)
         }
+    }
+
+    let now = time(nil)
+    if now - lastUpstream >= keepaliveInterval {
+        sendKeepalive()
+        lastUpstream = now
     }
 }
 

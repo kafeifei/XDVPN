@@ -5,7 +5,7 @@ import Foundation
 enum SudoersInstaller {
     /// 每次改 helper 脚本内容后递增。isInstalled 会校验磁盘上的版本号，
     /// 不匹配 → sudoConfigured=false → UI 自动提示"一键配置"覆盖升级。
-    static let helperVersion = 4
+    static let helperVersion = 5
 
     static let sudoersPath = "/etc/sudoers.d/xdvpn"
     static let helperDir = "/usr/local/libexec"
