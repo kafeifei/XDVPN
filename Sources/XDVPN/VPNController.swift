@@ -333,7 +333,10 @@ final class VPNController: ObservableObject {
 
     private func pollTick() {
         let running = OpenConnectRunner.isRunning
-        if isConnected, running { updateTrafficStats() }
+        if isConnected, running {
+            if tunnelInterface == nil { parseSessionFile() }
+            updateTrafficStats()
+        }
         // 声明"连着"但 openconnect 没了 = 意外死亡 → 自动 cleanup
         if isConnected, !running, !isBusy {
             isBusy = true
