@@ -87,8 +87,8 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .popover(isPresented: $showAdvanced, arrowEdge: .leading) {
                     AdvancedSettingsPopover(vpn: vpn)
+                        .disabled(vpn.isConnected || vpn.isBusy)
                 }
-                .disabled(vpn.isConnected || vpn.isBusy)
 
                 // 更多菜单
                 Menu {
