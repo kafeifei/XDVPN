@@ -1,4 +1,5 @@
 import AppKit
+import Darwin.POSIX.net
 import Foundation
 import SwiftUI
 
@@ -40,6 +41,17 @@ final class VPNController: ObservableObject {
     @Published private(set) var isBusy: Bool = false
     @Published private(set) var statusText: String = "未连接"
     @Published private(set) var sudoConfigured: Bool = SudoersInstaller.isInstalled
+
+    // MARK: - 诊断信息
+
+    @Published private(set) var connectedAt: Date?
+    @Published private(set) var tunnelInterface: String?
+    @Published private(set) var tunnelIP: String?
+    @Published private(set) var vpnGateway: String?
+    @Published private(set) var activeRoutes: [String] = []
+    @Published private(set) var dnsProxyActive: Bool = false
+    @Published private(set) var trafficIn: UInt64 = 0
+    @Published private(set) var trafficOut: UInt64 = 0
 
     // MARK: - 私有
 
@@ -234,6 +246,9 @@ final class VPNController: ObservableObject {
                     self.savePrefs()
                     BiometricGate.markActivity()
                     self.isConnected = true
+                    self.connectedAt = Date()
+                    self.parseSessionFile()
+                    self.updateTrafficStats()
                     self.statusText = "已连接"
                 case .failure(let err):
                     if case VPNError.sudoNotConfigured = err {
@@ -260,6 +275,7 @@ final class VPNController: ObservableObject {
                 guard let self else { return }
                 self.isBusy = false
                 self.isConnected = false
+                self.clearDiagnostics()
                 self.statusText = errMsg ?? "未连接"
             }
         }
@@ -317,6 +333,7 @@ final class VPNController: ObservableObject {
 
     private func pollTick() {
         let running = OpenConnectRunner.isRunning
+        if isConnected, running { updateTrafficStats() }
         // 声明"连着"但 openconnect 没了 = 意外死亡 → 自动 cleanup
         if isConnected, !running, !isBusy {
             isBusy = true
@@ -359,6 +376,7 @@ final class VPNController: ObservableObject {
         // 同步跑（阻塞主线程，屏幕要黑掉了 UI 阻塞无所谓）
         try? OpenConnectRunner.cleanup()
         isConnected = false
+        clearDiagnostics()
         statusText = "未连接"
     }
 
@@ -395,6 +413,114 @@ final class VPNController: ObservableObject {
         }
         statusText = "正在自动重连…"
         connect()
+    }
+
+    // MARK: - 诊断数据采集
+
+    private func parseSessionFile() {
+        guard let content = try? String(contentsOfFile: "/tmp/xdvpn.session", encoding: .utf8) else { return }
+        var routes: [String] = []
+        var hasDnsProxy = false
+        for line in content.components(separatedBy: .newlines) {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            switch String(parts[0]) {
+            case "TUNDEV": tunnelInterface = String(parts[1])
+            case "VPNGATEWAY": vpnGateway = String(parts[1])
+            case "ROUTE_NET": routes.append(String(parts[1]))
+            case "DNS_PROXY_PID": hasDnsProxy = true
+            default: break
+            }
+        }
+        activeRoutes = routes
+        dnsProxyActive = hasDnsProxy
+    }
+
+    private func updateTrafficStats() {
+        guard let iface = tunnelInterface else { return }
+        let info = Self.queryTunnel(iface)
+        tunnelIP = info.ip
+        trafficIn = info.bytesIn
+        trafficOut = info.bytesOut
+    }
+
+    private func clearDiagnostics() {
+        connectedAt = nil
+        tunnelInterface = nil
+        tunnelIP = nil
+        vpnGateway = nil
+        activeRoutes = []
+        dnsProxyActive = false
+        trafficIn = 0
+        trafficOut = 0
+    }
+
+    struct TunnelInfo {
+        var ip: String?
+        var bytesIn: UInt64 = 0
+        var bytesOut: UInt64 = 0
+    }
+
+    nonisolated static func queryTunnel(_ name: String) -> TunnelInfo {
+        var ifap: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifap) == 0, let first = ifap else { return TunnelInfo() }
+        defer { freeifaddrs(first) }
+
+        var info = TunnelInfo()
+        var cur: UnsafeMutablePointer<ifaddrs>? = first
+        while let ifa = cur {
+            defer { cur = ifa.pointee.ifa_next }
+            guard String(cString: ifa.pointee.ifa_name) == name,
+                  let addr = ifa.pointee.ifa_addr else { continue }
+
+            let family = Int32(addr.pointee.sa_family)
+            if family == AF_INET {
+                var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                getnameinfo(addr, socklen_t(addr.pointee.sa_len),
+                            &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST)
+                info.ip = String(cString: buf)
+            }
+            if family == AF_LINK, let data = ifa.pointee.ifa_data {
+                let d = data.assumingMemoryBound(to: if_data.self).pointee
+                info.bytesIn = UInt64(d.ifi_ibytes)
+                info.bytesOut = UInt64(d.ifi_obytes)
+            }
+        }
+        return info
+    }
+
+    var diagnosticsSummary: String {
+        var lines: [String] = []
+        lines.append("XDVPN 连接诊断")
+        lines.append("协议\t\(protocolName)")
+        lines.append("服务器\t\(server)")
+        if let gw = vpnGateway { lines.append("网关\t\(gw)") }
+        if let iface = tunnelInterface { lines.append("接口\t\(iface)") }
+        if let ip = tunnelIP { lines.append("地址\t\(ip)") }
+        if let t = connectedAt {
+            let dur = Int(Date().timeIntervalSince(t))
+            lines.append("时长\t\(Self.formatDuration(dur))")
+        }
+        lines.append("流量\t↑ \(Self.formatBytes(trafficOut))  ↓ \(Self.formatBytes(trafficIn))")
+        if !activeRoutes.isEmpty { lines.append("路由\t\(activeRoutes.joined(separator: ", "))") }
+        lines.append("分流\t\(splitEnabled ? "启用" : "关闭")")
+        if dnsProxyActive { lines.append("DNS 代理\t活跃") }
+        return lines.joined(separator: "\n")
+    }
+
+    nonisolated static func formatDuration(_ seconds: Int) -> String {
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        let s = seconds % 60
+        return String(format: "%02d:%02d:%02d", h, m, s)
+    }
+
+    nonisolated static func formatBytes(_ bytes: UInt64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var idx = 0
+        while value >= 1024 && idx < units.count - 1 { value /= 1024; idx += 1 }
+        return idx == 0 ? "\(bytes) B" : String(format: "%.1f %@", value, units[idx])
     }
 
     // MARK: - Internal helpers
