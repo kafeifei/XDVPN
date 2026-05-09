@@ -5,7 +5,7 @@ import Foundation
 enum SudoersInstaller {
     /// 每次改 helper 脚本内容后递增。isInstalled 会校验磁盘上的版本号，
     /// 不匹配 → sudoConfigured=false → UI 自动提示"一键配置"覆盖升级。
-    static let helperVersion = 7
+    static let helperVersion = 8
 
     static let sudoersPath = "/etc/sudoers.d/xdvpn"
     static let privilegedHelperParentDir = "/Library/PrivilegedHelperTools"
@@ -293,6 +293,9 @@ enum SudoersInstaller {
             VPN_DNS=$(echo "$INTERNAL_IP4_DNS" | awk '{print $1}')
             DNS_PROXY="\#(dnsProxyPath)"
             if [ -x "$DNS_PROXY" ]; then
+                # 杀掉上一次残留的 dns-proxy（升级、异常退出等场景可能留下孤儿进程占住端口 53）
+                pkill -x xdvpn-dns-proxy 2>/dev/null || true
+                sleep 0.2
                 READY="/tmp/xdvpn-dns-proxy.ready"
                 rm -f "$READY"
                 nohup "$DNS_PROXY" --vpn-dns "$VPN_DNS" --utun "$TUNDEV" \
@@ -446,7 +449,7 @@ enum SudoersInstaller {
         rm -f "$PID_FILE"
     fi
 
-    # 停 dns-proxy（从 session 读 PID）
+    # 停 dns-proxy（从 session 读 PID + 兜底 pkill）
     if [ -f "$SESSION" ]; then
         while IFS='=' read -r tag val; do
             if [ "$tag" = "DNS_PROXY_PID" ]; then
@@ -465,6 +468,12 @@ enum SudoersInstaller {
             esac
         done < "$SESSION"
     fi
+    # 兜底：杀掉任何残留的 dns-proxy（升级遗留、session 丢失等）
+    pkill -x xdvpn-dns-proxy 2>/dev/null || true
+    # 兜底：清理 XDVPN 管理的 resolver 文件
+    for f in /etc/resolver/*; do
+        [ -f "$f" ] && remove_xdvpn_resolver "$f"
+    done 2>/dev/null || true
 
     # openconnect 退出 → kernel close tun fd → utun 销毁 → interface-scoped 路由自动跟着清掉
 

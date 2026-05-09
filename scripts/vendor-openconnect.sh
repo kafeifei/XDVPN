@@ -42,7 +42,7 @@ if [[ -z "$source_bin" ]]; then
 fi
 source_bin="$(realpath "$source_bin")"
 
-version_line="$("$source_bin" --version 2>&1 | head -n 1)"
+version_line="$(LC_ALL=C "$source_bin" --version 2>&1 | head -n 1)"
 case "$version_line" in
   "OpenConnect version v${allowed_minor}"|"OpenConnect version v${allowed_minor}."*|"OpenConnect version v${allowed_minor}-"*) ;;
   *)
