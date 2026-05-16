@@ -466,17 +466,22 @@ extension AppDelegate: NSMenuDelegate {
         return item
     }
 
+    /// 纯代理模式不依赖 sudo
+    private var needsSudoBootstrap: Bool {
+        !controller.useProxyMode && !controller.sudoConfigured
+    }
+
     private func makeConnectActionItem() -> NSMenuItem {
         let title: String
         if controller.isBusy { title = "请稍候…" }
         else if controller.isConnected { title = "断开连接" }
-        else if !controller.sudoConfigured { title = "首次配置并连接" }
+        else if needsSudoBootstrap { title = "首次配置并连接" }
         else { title = "连接" }
 
         let item = NSMenuItem(title: title, action: #selector(menuToggleConnection), keyEquivalent: "k")
         item.target = self
         item.isEnabled = !controller.isBusy &&
-            (controller.isConnected || !controller.sudoConfigured || controller.canConnect)
+            (controller.isConnected || needsSudoBootstrap || controller.canConnect)
         return item
     }
 
@@ -612,7 +617,7 @@ extension AppDelegate: NSMenuDelegate {
 
     @objc private func menuToggleConnection() {
         if controller.isConnected { controller.disconnect() }
-        else if !controller.sudoConfigured { controller.installSudoers(thenConnect: true) }
+        else if needsSudoBootstrap { controller.installSudoers(thenConnect: true) }
         else if controller.canConnect { controller.connect() }
         else { showMainWindow() }
     }

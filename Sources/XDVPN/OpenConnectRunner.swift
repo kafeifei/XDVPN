@@ -223,14 +223,15 @@ enum OpenConnectRunner {
             killAndWait(pid)
         }
 
-        // 2) 兜底：用 pgrep 找所有 ocproxy 进程（孤儿场景：openconnect 已死，
-        //    ocproxy 没跟着退；或者两个根本没父子关系了）
-        for pid in pidsMatching(command: "ocproxy") {
-            killAndWait(pid)
-        }
-        // 兜底：同样找 bundled openconnect（pid-file 缺失时也能清）
-        for pid in pidsMatching(command: "XDVPN.app/Contents/Resources/openconnect/bin/openconnect") {
-            killAndWait(pid)
+        // 2) 兜底：找孤儿 ocproxy 和 openconnect。**只匹配 bundle 里的绝对路径**，
+        //    避免误杀用户在别处装的 ocproxy / openconnect。
+        //    Bundle 路径形如 `XDVPN.app/Contents/Resources/openconnect/bin/<bin>`，
+        //    用 pgrep 的全路径匹配既能精确锁定我们启的进程，又能跨多份 .app 安装（如 dev + 生产）。
+        if let resourcePath = Bundle.main.resourcePath {
+            let ocproxyPath = resourcePath + "/openconnect/bin/ocproxy"
+            let openconnectPath = resourcePath + "/openconnect/bin/openconnect"
+            for pid in pidsMatching(command: ocproxyPath) { killAndWait(pid) }
+            for pid in pidsMatching(command: openconnectPath) { killAndWait(pid) }
         }
 
         try? FileManager.default.removeItem(atPath: proxyModePidPath)

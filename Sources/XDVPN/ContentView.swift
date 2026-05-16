@@ -761,21 +761,26 @@ private struct PrimaryActionButton: View {
         .keyboardShortcut(.defaultAction)
     }
 
+    /// 纯代理模式不依赖 sudo（openconnect 以用户身份跑），不应被 sudo install 流程拦住
+    private var needsSudoBootstrap: Bool {
+        !vpn.useProxyMode && !vpn.sudoConfigured
+    }
+
     private func tap() {
         if vpn.isConnected { vpn.disconnect() }
-        else if !vpn.sudoConfigured { vpn.installSudoers(thenConnect: true) }
+        else if needsSudoBootstrap { vpn.installSudoers(thenConnect: true) }
         else { vpn.connect() }
     }
 
     private var iconName: String {
         if vpn.isConnected { return "power.circle.fill" }
-        if !vpn.sudoConfigured { return "wand.and.stars" }
+        if needsSudoBootstrap { return "wand.and.stars" }
         return "link"
     }
     private var label: String {
         if vpn.isBusy { return "请稍候…" }
         if vpn.isConnected { return "断开连接" }
-        if !vpn.sudoConfigured { return "首次配置并连接" }
+        if needsSudoBootstrap { return "首次配置并连接" }
         return "连接"
     }
     private var buttonBg: Color {
@@ -789,7 +794,7 @@ private struct PrimaryActionButton: View {
     private var disabled: Bool {
         if vpn.isBusy { return true }
         if vpn.isConnected { return false }
-        if !vpn.sudoConfigured { return false }
+        if needsSudoBootstrap { return false }
         return !vpn.canConnect
     }
 }
