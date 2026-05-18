@@ -8,8 +8,12 @@ final class DebugServer {
     private var listener: NWListener?
     private let port: UInt16 = 19876
     private weak var vpn: VPNController?
+    private weak var updater: UpdateChecker?
 
-    init(vpn: VPNController) { self.vpn = vpn }
+    init(vpn: VPNController, updater: UpdateChecker) {
+        self.vpn = vpn
+        self.updater = updater
+    }
 
     func start() {
         print("[DebugServer] start() called")
@@ -142,13 +146,20 @@ final class DebugServer {
         case "disconnect":
             vpn.disconnect()
             return Self.ok(["ok": true])
+        case "fake-update":
+            let version = obj["version"] as? String ?? "99.0.0"
+            updater?.fakeUpdate(version: version)
+            return Self.ok(["ok": true, "fakeVersion": version])
+        case "clear-update":
+            updater?.clearFakeUpdate()
+            return Self.ok(["ok": true])
         case "ax-press":
             return Self.axPress(obj)
         case "ax-set-value":
             return Self.axSetValue(obj)
         default:
             return ("400 Bad Request", Self.json(["error": "unknown action: \(action)",
-                "available": ["connect", "disconnect", "ax-press", "ax-set-value"]]))
+                "available": ["connect", "disconnect", "fake-update", "clear-update", "ax-press", "ax-set-value"]]))
         }
     }
 

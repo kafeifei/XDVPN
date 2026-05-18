@@ -105,24 +105,17 @@ enum MenuBarIcon {
                               width: maxX - minX + 1, height: maxY - minY + 1)
         guard let cropped = fullCG.cropping(to: cropRect) else { return nil }
 
-        // 输出：18pt 容器，内容 13pt 居中。背后 4x 像素 backing 保证 Retina 清晰
-        let containerPt: CGFloat = 18
+        // 输出：紧凑尺寸，内容 13pt 高度，宽度贴合内容不加 padding。
+        // 速度文字的间距由 composeStatusImage() 的 iconGap 负责。
         let contentPt: CGFloat = 13
         let aspect = CGFloat(cropped.width) / CGFloat(cropped.height)
-        let contentWPt = contentPt * aspect
-        let containerWPt = max(containerPt, ceil(contentWPt + 4))
+        let contentWPt = ceil(contentPt * aspect)
 
-        // 用 drawingHandler 让系统在任意 backing scale 下都调用我们重绘 → 永远锐利
-        let img = NSImage(size: NSSize(width: containerWPt, height: containerPt),
+        let img = NSImage(size: NSSize(width: contentWPt, height: contentPt),
                           flipped: false) { _ in
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
             ctx.interpolationQuality = .high
-            let drawRect = CGRect(
-                x: (containerWPt - contentWPt) / 2,
-                y: (containerPt - contentPt) / 2,
-                width: contentWPt, height: contentPt
-            )
-            ctx.draw(cropped, in: drawRect)
+            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: contentWPt, height: contentPt))
             return true
         }
         return img
@@ -156,7 +149,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private var mainWindow: NSWindow?
-    private var badgeView: NSView?
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: lifecycle
@@ -167,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updater = UpdateChecker()
         updater.startPolling()
         #if DEBUG
-        debugServer = DebugServer(vpn: c)
+        debugServer = DebugServer(vpn: c, updater: updater)
         debugServer?.start()
         #endif
 
@@ -207,12 +199,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.refreshStatusItem() }
             .store(in: &cancellables)
 
-        updater.$latestVersion
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.refreshBadge() }
-            .store(in: &cancellables)
-
         // 直接订阅速率发布者 —— 每次 pollTimer 刷新速率（1Hz）都重画
         Publishers.CombineLatest(controller.$trafficInRate, controller.$trafficOutRate)
             .receive(on: RunLoop.main)
@@ -230,32 +216,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = composeStatusImage()
         // 整体淡化：未连接时半透明（不变黑，跟随明暗模式自动适配）
         button.alphaValue = controller.isConnected ? 1.0 : 0.4
-        refreshBadge()
-    }
-
-    private func refreshBadge() {
-        guard let button = statusItem.button else { return }
-
-        if updater.hasUpdate {
-            if badgeView == nil {
-                let size: CGFloat = 7
-                let dot = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
-                dot.wantsLayer = true
-                dot.layer?.backgroundColor = NSColor.systemRed.cgColor
-                dot.layer?.cornerRadius = size / 2
-                button.addSubview(dot)
-                badgeView = dot
-            }
-            // 每次刷新都重新定位（button 尺寸可能因速度文字变化）
-            let size: CGFloat = 7
-            badgeView?.frame = NSRect(
-                x: button.bounds.width - size - 1,
-                y: button.bounds.height - size - 2,
-                width: size, height: size)
-            badgeView?.isHidden = false
-        } else {
-            badgeView?.isHidden = true
-        }
     }
 
     /// 把图标 + （可选）两行速度文字合成成一张 template NSImage，

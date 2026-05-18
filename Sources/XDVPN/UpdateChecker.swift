@@ -54,6 +54,18 @@ final class UpdateChecker: ObservableObject {
         }.resume()
     }
 
+    #if DEBUG
+    func fakeUpdate(version: String) {
+        latestVersion = version
+        downloadURL = URL(string: "https://github.com/\(repo)/releases")
+    }
+
+    func clearFakeUpdate() {
+        latestVersion = nil
+        downloadURL = nil
+    }
+    #endif
+
     func showUpdateWindow() {
         if let w = updateWindow, w.isVisible {
             w.makeKeyAndOrderFront(nil)
