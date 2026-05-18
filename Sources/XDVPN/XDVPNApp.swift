@@ -164,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let c = VPNController()
         controller = c
         updater = UpdateChecker()
-        updater.check()
+        updater.startPolling()
         #if DEBUG
         debugServer = DebugServer(vpn: c)
         debugServer?.start()
@@ -409,7 +409,23 @@ extension AppDelegate: NSMenuDelegate {
             menu.addItem(makeAdvancedSubmenu())
         }
 
-        // 8. 退出
+        // 8. 更新提示（第一层可见）
+        if updater.hasUpdate {
+            menu.addItem(NSMenuItem.separator())
+            let update = NSMenuItem(
+                title: "新版本 v\(updater.latestVersion ?? "") 可用",
+                action: #selector(menuShowUpdate),
+                keyEquivalent: "u")
+            update.target = self
+            if let dot = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: nil) {
+                let cfg = NSImage.SymbolConfiguration(pointSize: 7, weight: .bold)
+                    .applying(NSImage.SymbolConfiguration(paletteColors: [.systemRed]))
+                update.image = dot.withSymbolConfiguration(cfg)
+            }
+            menu.addItem(update)
+        }
+
+        // 9. 退出
         menu.addItem(NSMenuItem.separator())
         let quit = NSMenuItem(title: "退出 XDVPN", action: #selector(menuQuit), keyEquivalent: "q")
         quit.target = self
@@ -633,6 +649,7 @@ extension AppDelegate: NSMenuDelegate {
         if updater.hasUpdate { updater.showUpdateWindow() }
         else { updater.check() }
     }
+    @objc private func menuShowUpdate() { updater.showUpdateWindow() }
     @objc private func menuUninstallSudo() { controller.uninstallSudoers() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 

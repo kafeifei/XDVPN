@@ -19,6 +19,15 @@ final class UpdateChecker: ObservableObject {
     private let repo = "kafeifei/XDVPN"
     private var downloadDelegate: DownloadDelegate?
     private var updateWindow: NSWindow?
+    private var pollTimer: Timer?
+
+    func startPolling(interval: TimeInterval = 600) {
+        check()
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.check() }
+        }
+    }
 
     func check() {
         let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
