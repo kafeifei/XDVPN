@@ -178,6 +178,9 @@ enum OpenConnectRunner {
         proc.executableURL = URL(fileURLWithPath: openconnectBin)
         proc.arguments = [
             "--background",
+            // 客户端每 5s 主动 DPD 探死链：服务端 idle 踢会话 / DTLS 假死后秒级被发现，
+            // openconnect 自愈失败即退出，pollTick 的进程探活随即接管重连。零 sudo 代价（user 态）。
+            "--force-dpd=5",
             "--pid-file=" + proxyModePidPath,
             "--script-tun",
             // openconnect 通过 sh -c 执行 script string，所以 ocproxy 路径要 quote

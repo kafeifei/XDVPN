@@ -49,6 +49,7 @@ struct MainWindowView: View {
 
     @State private var diagExpanded = false
     @State private var splitDetailsExpanded = false
+    @State private var showLogs = false
 
     var body: some View {
         ScrollView {
@@ -79,7 +80,7 @@ struct MainWindowView: View {
                 PrimaryActionButton()
                     .padding(.top, 2)
 
-                FooterRow()
+                FooterRow(showLogs: $showLogs)
             }
             .padding(18)
         }
@@ -87,6 +88,9 @@ struct MainWindowView: View {
         .scrollIndicators(.automatic)
         .frame(width: Design.mainWindowWidth)
         .background(WindowBackground())
+        .sheet(isPresented: $showLogs) {
+            LogPanelView()
+        }
     }
 }
 
@@ -566,6 +570,7 @@ private struct DiagnosticsSection: View {
 private struct FooterRow: View {
     @EnvironmentObject var vpn: VPNController
     @EnvironmentObject var updater: UpdateChecker
+    @Binding var showLogs: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -579,6 +584,10 @@ private struct FooterRow: View {
                     .foregroundStyle(.orange)
             }
             Spacer()
+            Button("运行日志") { showLogs = true }
+                .font(.system(size: 11))
+                .buttonStyle(.link)
+            Text("·").font(.system(size: 11)).foregroundStyle(.tertiary)
             Button("GitHub") {
                 if let u = URL(string: "https://github.com/kafeifei/XDVPN") {
                     NSWorkspace.shared.open(u)
@@ -816,4 +825,173 @@ private struct PrimaryActionButton: View {
         if needsSudoBootstrap { return false }
         return !vpn.canConnect
     }
+}
+
+// =====================================================================
+// MARK: - 运行日志面板（release 可见）
+//
+// 观察自动重连行为用。最新在底部 + 自动滚到底，符合「跟踪实时日志」直觉。
+// 接 LogStore.shared，@ObservedObject 自动刷新。复制全部 / 清空。
+// =====================================================================
+
+struct LogPanelView: View {
+    @ObservedObject private var store = LogStore.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var copied = false
+
+    private static let timeFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // 头部
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Design.accentDeep)
+                Text("运行日志")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("\(store.entries.count) 条")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(store.plainText(), forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { copied = false }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.clipboard")
+                            .font(.system(size: 10))
+                        Text(copied ? "已复制" : "复制全部")
+                            .font(.system(size: 11))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(store.entries.isEmpty)
+
+                Button {
+                    store.clear()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash").font(.system(size: 10))
+                        Text("清空").font(.system(size: 11))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(store.entries.isEmpty)
+
+                Button("关闭") { dismiss() }
+                    .controlSize(.small)
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            // 日志列表
+            if store.entries.isEmpty {
+                VStack(spacing: 6) {
+                    Spacer()
+                    Image(systemName: "tray")
+                        .font(.system(size: 26))
+                        .foregroundStyle(.tertiary)
+                    Text("暂无日志")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Text("连接 VPN 后，自动重连等运行事件会显示在这里")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(store.entries) { entry in
+                                LogRow(entry: entry, timeFmt: Self.timeFmt)
+                                    .id(entry.id)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .onAppear { scrollToBottom(proxy) }
+                    .onChange(of: store.entries.count) { _, _ in scrollToBottom(proxy) }
+                }
+            }
+        }
+        .frame(width: 520, height: 420)
+        .background(WindowBackgroundColor())
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        guard let last = store.entries.last else { return }
+        // 等一帧让新行先布局，再滚到底
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.12)) {
+                proxy.scrollTo(last.id, anchor: .bottom)
+            }
+        }
+    }
+}
+
+private struct LogRow: View {
+    let entry: LogEntry
+    let timeFmt: DateFormatter
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(timeFmt.string(from: entry.time))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 62, alignment: .leading)
+            Text(entry.level.label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(levelColor)
+                .frame(width: 30, alignment: .leading)
+            Text(entry.message)
+                .font(.system(size: 12))
+                .foregroundStyle(messageColor)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 3)
+    }
+
+    private var levelColor: Color {
+        switch entry.level {
+        case .info:  return .secondary
+        case .warn:  return .orange
+        case .error: return .red
+        }
+    }
+    private var messageColor: Color {
+        switch entry.level {
+        case .info:  return .primary
+        case .warn:  return .orange
+        case .error: return .red
+        }
+    }
+}
+
+/// sheet 背景使用窗口色，避免纯白
+private struct WindowBackgroundColor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .windowBackground
+        v.blendingMode = .behindWindow
+        v.state = .active
+        return v
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }

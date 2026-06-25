@@ -114,6 +114,7 @@ final class DebugServer {
             "splitDomains": vpn.splitDomains,
             "sudoConfigured": vpn.sudoConfigured,
         ] as [String: Any]
+        dict["reconnect"] = vpn.debugReconnectState
         dict["windows"] = NSApp.windows.map { w -> [String: Any] in
             [
                 "title": w.title,
@@ -153,13 +154,32 @@ final class DebugServer {
         case "clear-update":
             updater?.clearFakeUpdate()
             return Self.ok(["ok": true])
+        case "sim-sleep":
+            vpn.debugSimulateWillSleep()
+            return Self.ok(["ok": true, "did": "willSleep"])
+        case "sim-wake":
+            vpn.debugSimulateDidWake()
+            return Self.ok(["ok": true, "did": "didWake"])
+        case "sim-tunnel-lost":
+            vpn.debugSimulateTunnelLost()
+            return Self.ok(["ok": true, "did": "tunnelLost(cleanup+reconnect)"])
+        case "sim-netchange":
+            vpn.debugSimulateNetworkChange()
+            return Self.ok(["ok": true, "did": "networkChanged"])
+        case "net-down":
+            vpn.debugSetNetworkSatisfied(false)
+            return Self.ok(["ok": true, "networkSatisfied": false])
+        case "net-up":
+            vpn.debugSetNetworkSatisfied(true)
+            return Self.ok(["ok": true, "networkSatisfied": true])
         case "ax-press":
             return Self.axPress(obj)
         case "ax-set-value":
             return Self.axSetValue(obj)
         default:
             return ("400 Bad Request", Self.json(["error": "unknown action: \(action)",
-                "available": ["connect", "disconnect", "fake-update", "clear-update", "ax-press", "ax-set-value"]]))
+                "available": ["connect", "disconnect", "fake-update", "clear-update", "ax-press", "ax-set-value",
+                              "sim-sleep", "sim-wake", "sim-tunnel-lost", "sim-netchange", "net-down", "net-up"]]))
         }
     }
 
