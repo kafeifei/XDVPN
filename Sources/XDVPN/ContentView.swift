@@ -264,14 +264,14 @@ private struct ModeSection: View {
                     Spacer()
                 }
 
-                Picker("", selection: $vpn.runningMode) {
+                Picker("", selection: modeSelection) {
                     ForEach(VPNController.RunningMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .disabled(vpn.isConnected || vpn.isBusy)
+                .disabled(vpn.isBusy)
 
                 Text(currentSummary)
                     .font(.system(size: 11))
@@ -279,12 +279,19 @@ private struct ModeSection: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if vpn.isConnected {
-                    Text("切换模式需先断开 VPN")
+                    Text("切换模式会断开当前 VPN 并自动重连")
                         .font(.system(size: 10))
                         .foregroundStyle(.orange)
                 }
             }
         }
+    }
+
+    private var modeSelection: Binding<VPNController.RunningMode> {
+        Binding(
+            get: { vpn.runningMode },
+            set: { vpn.selectMode($0) }
+        )
     }
 
     private var iconName: String {
