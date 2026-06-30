@@ -77,7 +77,7 @@ final class VPNController: ObservableObject {
     ///   - .proxy   纯代理：openconnect --script-tun + ocproxy 用户态，不动系统状态
     ///   - .split   VPN 分流：标准模式，仅指定 CIDR 走 VPN，其它走本地默认
     ///   - .full    VPN 全局：标准模式，所有流量走 VPN（def1）
-    enum RunningMode: String, CaseIterable, Identifiable {
+    enum RunningMode: String, CaseIterable, Identifiable, Sendable {
         case proxy, split, full
         var id: String { rawValue }
 
@@ -101,6 +101,10 @@ final class VPNController: ObservableObject {
     @Published var runningMode: RunningMode = .split {
         didSet { UserDefaults.standard.set(runningMode.rawValue, forKey: "xdvpn.runningMode") }
     }
+
+    /// 当前底层进程真实采用的模式。`runningMode` 是用户选择/下次连接模式；
+    /// 已连接时清理必须按 activeMode 走，避免切换 UI 后杀错进程族。
+    private var activeMode: RunningMode?
 
     /// 兼容旧调用方：内部代码大量用 useProxyMode/splitEnabled 这两个 bool，
     /// 通过 computed property 派生，保留单一数据源（runningMode）
@@ -161,7 +165,7 @@ final class VPNController: ObservableObject {
 
     /// 当前模式映射到纯核心的 RunMode
     private var coreMode: RunMode {
-        switch runningMode {
+        switch activeMode ?? runningMode {
         case .proxy: return .proxy
         case .split: return .split
         case .full:  return .full
@@ -230,12 +234,14 @@ final class VPNController: ObservableObject {
         statusText = "网络已切换，正在重建连接…"
         appLog(.warn, "网络已切换，重建连接")
         isBusy = true
-        if useProxyMode {
+        let mode = activeMode ?? runningMode
+        if mode == .proxy {
             Task.detached { [weak self] in
                 OpenConnectRunner.disconnectProxyMode()
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.isConnected = false
+                    self.activeMode = nil
                     self.isBusy = false
                     self.onTunnelLost()
                 }
@@ -244,6 +250,7 @@ final class VPNController: ObservableObject {
             runCleanupDetached(reason: "换网清理旧隧道") { [weak self] in
                 guard let self else { return }
                 self.isConnected = false
+                self.activeMode = nil
                 self.isBusy = false
                 self.onTunnelLost()
             }
@@ -403,6 +410,101 @@ final class VPNController: ObservableObject {
 
     // MARK: - 用户动作
 
+    func selectMode(_ mode: RunningMode, presentingWindow: NSWindow? = nil) {
+        guard mode != runningMode, !isBusy else { return }
+        guard isConnected else {
+            runningMode = mode
+            savePrefs()
+            return
+        }
+        confirmModeSwitch(to: mode, presentingWindow: presentingWindow)
+    }
+
+    private func confirmModeSwitch(to targetMode: RunningMode, presentingWindow: NSWindow?) {
+        let currentMode = activeMode ?? runningMode
+        guard targetMode != currentMode else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "切换到\(targetMode.label)？"
+        alert.informativeText = "这会先断开当前的\(currentMode.label)，然后用\(targetMode.label)重新连接。"
+        alert.addButton(withTitle: "切换并重连")
+        alert.addButton(withTitle: "取消")
+
+        if let window = sheetParentWindow(preferred: presentingWindow) {
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard response == .alertFirstButtonReturn else { return }
+                Task { @MainActor [weak self] in
+                    self?.switchModeAndReconnect(to: targetMode)
+                }
+            }
+        } else {
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            switchModeAndReconnect(to: targetMode)
+        }
+    }
+
+    private func sheetParentWindow(preferred: NSWindow?) -> NSWindow? {
+        let candidates = [preferred, NSApp.keyWindow, NSApp.mainWindow] + NSApp.windows
+        return candidates.compactMap { $0 }.first {
+            $0.isVisible && !$0.isSheet && $0.canBecomeKey
+        }
+    }
+
+    private func switchModeAndReconnect(to targetMode: RunningMode) {
+        guard !isBusy else { return }
+        let currentMode = activeMode ?? runningMode
+        guard targetMode != currentMode else { return }
+
+        guard isConnected else {
+            switchToModeAndConnectIfPossible(targetMode)
+            return
+        }
+
+        cancelAutoReconnect()
+        isBusy = true
+        statusText = "正在切换到\(targetMode.label)…"
+        appLog(.info, "切换运行模式：\(currentMode.label) → \(targetMode.label)")
+
+        Task.detached { [weak self] in
+            let errMsg: String?
+            do {
+                try Self.cleanup(mode: currentMode)
+                errMsg = nil
+            } catch {
+                errMsg = error.localizedDescription
+            }
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.isBusy = false
+                if let errMsg {
+                    self.statusText = "切换失败：\(errMsg)"
+                    appLog(.error, "切换模式清理失败：\(errMsg)")
+                    return
+                }
+
+                self.isConnected = false
+                self.activeMode = nil
+                self.clearDiagnostics()
+                self.switchToModeAndConnectIfPossible(targetMode)
+            }
+        }
+    }
+
+    private func switchToModeAndConnectIfPossible(_ targetMode: RunningMode) {
+        runningMode = targetMode
+        savePrefs()
+
+        if targetMode != .proxy && !sudoConfigured {
+            installSudoers(thenConnect: true)
+        } else if canConnect {
+            connect()
+        } else {
+            statusText = "已切换到\(targetMode.label)，请补全配置后连接"
+        }
+    }
+
     /// 启动后调用：如果用户开了"启动时自动连接"且凭据齐全，就发起一次连接。
     /// 给 init 里的 self-heal cleanup 一点时间跑完，再走正常 connect 流程
     /// （connect 内部会再做一次 cleanup，所以即便 cleanup 还没跑完也安全）。
@@ -423,14 +525,15 @@ final class VPNController: ObservableObject {
         guard canConnect else { return }
         isBusy = true
         statusText = silent ? "正在自动重连…" : "正在连接…"
-        appLog(.info, silent ? "开始自动重连（\(runningMode.label)）" : "用户发起连接（\(runningMode.label)）")
+        let mode = runningMode
+        appLog(.info, silent ? "开始自动重连（\(mode.label)）" : "用户发起连接（\(mode.label)）")
 
         let p = protocolName, s = server, u = user, pw = password
         let remember = rememberPassword
         let account = keychainAccount
-        let proxyMode = useProxyMode
+        let proxyMode = mode == .proxy
         let socksPort = UInt16(socks5Port)
-        let splitOn = splitEnabled
+        let splitOn = mode == .split
         let splitCIDRs = collectSplitCIDRs()
         let domainSuffixes = collectDomainSuffixes()
 
@@ -483,6 +586,7 @@ final class VPNController: ObservableObject {
                     }
                     self.isAutoReconnecting = false
                     self.resetBlackholeTracking()
+                    self.activeMode = mode
                     self.isConnected = true
                     self.connectedAt = now
                     if proxyMode {
@@ -495,13 +599,14 @@ final class VPNController: ObservableObject {
                         self.parseSessionFile()
                         self.updateTrafficStats()
                         self.statusText = "已连接"
-                        appLog(.info, "已连接（\(self.runningMode.label)）")
+                        appLog(.info, "已连接（\(mode.label)）")
                     }
                 case .failure(let err):
                     if case VPNError.sudoNotConfigured = err {
                         self.sudoConfigured = false
                     }
                     self.isConnected = false
+                    self.activeMode = nil
                     if silent, self.isAutoReconnecting {
                         // 自动重连这次失败 → 沿退避链推进，而不是停在未连接（修硬失败单次放弃）
                         appLog(.error, "自动重连尝试失败：\(err.localizedDescription)")
@@ -523,21 +628,21 @@ final class VPNController: ObservableObject {
         statusText = "正在断开…"
         appLog(.info, "用户手动断开")
 
-        let proxyMode = useProxyMode
+        let disconnectMode = activeMode ?? runningMode
 
         Task.detached { [weak self] in
             let errMsg: String?
-            if proxyMode {
-                OpenConnectRunner.disconnectProxyMode()
+            do {
+                try Self.cleanup(mode: disconnectMode)
                 errMsg = nil
-            } else {
-                do { try OpenConnectRunner.cleanup(); errMsg = nil }
-                catch { errMsg = error.localizedDescription }
+            } catch {
+                errMsg = error.localizedDescription
             }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.isBusy = false
                 self.isConnected = false
+                self.activeMode = nil
                 self.clearDiagnostics()
                 self.statusText = errMsg ?? "未连接"
             }
@@ -603,8 +708,9 @@ final class VPNController: ObservableObject {
 
     private func pollTick() {
         // 按当前模式检查对应的 openconnect 进程是否还活着
-        let running = useProxyMode ? OpenConnectRunner.isProxyModeRunning : OpenConnectRunner.isRunning
-        if isConnected, running, !useProxyMode {
+        let mode = activeMode ?? runningMode
+        let running = mode == .proxy ? OpenConnectRunner.isProxyModeRunning : OpenConnectRunner.isRunning
+        if isConnected, running, mode != .proxy {
             // 标准模式才采流量/解析 session；纯代理模式拿不到这些数据
             if tunnelInterface == nil { parseSessionFile() }
             updateTrafficStats()
@@ -644,12 +750,14 @@ final class VPNController: ObservableObject {
     private func beginAutoCleanupAndReconnect() {
         isBusy = true
         statusText = "连接已丢失，正在清理…"
-        if useProxyMode {
+        let mode = activeMode ?? runningMode
+        if mode == .proxy {
             Task.detached { [weak self] in
                 OpenConnectRunner.disconnectProxyMode()
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.isConnected = false
+                    self.activeMode = nil
                     self.isBusy = false
                     self.onTunnelLost()
                 }
@@ -658,6 +766,7 @@ final class VPNController: ObservableObject {
             runCleanupDetached(reason: "意外断开自动清理") { [weak self] in
                 guard let self else { return }
                 self.isConnected = false
+                self.activeMode = nil
                 self.isBusy = false
                 self.onTunnelLost()
             }
@@ -785,7 +894,8 @@ final class VPNController: ObservableObject {
         cancelAutoReconnect()
         shouldReconnectAfterWake = isConnected
         if isConnected { appLog(.warn, "休眠，断开连接") }
-        if useProxyMode {
+        let mode = activeMode ?? runningMode
+        if mode == .proxy {
             guard isConnected || OpenConnectRunner.isProxyModeRunning else { return }
             OpenConnectRunner.disconnectProxyMode()
         } else {
@@ -794,6 +904,7 @@ final class VPNController: ObservableObject {
             try? OpenConnectRunner.cleanup()
         }
         isConnected = false
+        activeMode = nil
         clearDiagnostics()
         statusText = "未连接"
     }
@@ -804,7 +915,8 @@ final class VPNController: ObservableObject {
         let shouldReconnect = shouldReconnectAfterWake
         shouldReconnectAfterWake = false
 
-        if useProxyMode {
+        let mode = activeMode ?? runningMode
+        if mode == .proxy {
             if isConnected || OpenConnectRunner.isProxyModeRunning {
                 isBusy = true
                 statusText = "休眠唤醒，正在清理…"
@@ -813,6 +925,7 @@ final class VPNController: ObservableObject {
                     await MainActor.run { [weak self] in
                         guard let self else { return }
                         self.isConnected = false
+                        self.activeMode = nil
                         self.isBusy = false
                         self.statusText = "未连接"
                         if shouldReconnect { self.reconnectAfterWake() }
@@ -832,6 +945,7 @@ final class VPNController: ObservableObject {
             runCleanupDetached(reason: "唤醒后清理残留隧道") { [weak self] in
                 guard let self else { return }
                 self.isConnected = false
+                self.activeMode = nil
                 self.isBusy = false
                 self.statusText = "未连接"
                 if shouldReconnect { self.reconnectAfterWake() }
@@ -1011,6 +1125,15 @@ final class VPNController: ObservableObject {
 
     // MARK: - Internal helpers
 
+    nonisolated private static func cleanup(mode: RunningMode) throws {
+        switch mode {
+        case .proxy:
+            OpenConnectRunner.disconnectProxyMode()
+        case .split, .full:
+            try OpenConnectRunner.cleanup()
+        }
+    }
+
     /// 在后台跑 cleanup，成功/失败都更新一下 isConnected / statusText。
     private func runCleanupDetached(
         reason: String,
@@ -1030,6 +1153,7 @@ final class VPNController: ObservableObject {
                     // 只在真的已经不跑了的情况下确认 isConnected
                     if !OpenConnectRunner.isRunning, self.isConnected {
                         self.isConnected = false
+                        self.activeMode = nil
                         self.statusText = "未连接"
                     }
                 }

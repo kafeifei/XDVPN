@@ -563,7 +563,7 @@ extension AppDelegate: NSMenuDelegate {
         let parent = NSMenuItem(title: "运行模式", action: nil, keyEquivalent: "")
         let sub = NSMenu(title: "运行模式")
 
-        let modeChangeAllowed = !controller.isConnected && !controller.isBusy
+        let modeChangeAllowed = !controller.isBusy
 
         // 三选一（互斥）
         for mode in VPNController.RunningMode.allCases {
@@ -573,6 +573,18 @@ extension AppDelegate: NSMenuDelegate {
             item.representedObject = mode.rawValue
             item.isEnabled = modeChangeAllowed
             sub.addItem(item)
+        }
+
+        if controller.isConnected {
+            sub.addItem(NSMenuItem.separator())
+            let hint = makeDisabledItem("切换会断开并自动重连")
+            hint.attributedTitle = NSAttributedString(
+                string: hint.title,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: NSColor.systemOrange,
+                ])
+            sub.addItem(hint)
         }
 
         // 分流模式专属：CIDR 子配置
@@ -623,8 +635,9 @@ extension AppDelegate: NSMenuDelegate {
     @objc private func menuSelectMode(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let mode = VPNController.RunningMode(rawValue: raw) else { return }
-        controller.runningMode = mode
-        controller.savePrefs()
+        guard mode != controller.runningMode else { return }
+        if controller.isConnected { showMainWindow() }
+        controller.selectMode(mode, presentingWindow: mainWindow)
     }
 
     private func makeHelpSubmenu() -> NSMenuItem {
