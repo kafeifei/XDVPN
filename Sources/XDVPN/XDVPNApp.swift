@@ -635,6 +635,7 @@ extension AppDelegate: NSMenuDelegate {
     @objc private func menuSelectMode(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let mode = VPNController.RunningMode(rawValue: raw) else { return }
+        guard mode != controller.runningMode else { return }
         if controller.isConnected { showMainWindow() }
         controller.selectMode(mode, presentingWindow: mainWindow)
     }

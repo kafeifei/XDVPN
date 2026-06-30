@@ -454,9 +454,10 @@ final class VPNController: ObservableObject {
     private func switchModeAndReconnect(to targetMode: RunningMode) {
         guard !isBusy else { return }
         let currentMode = activeMode ?? runningMode
-        guard isConnected, targetMode != currentMode else {
-            runningMode = targetMode
-            savePrefs()
+        guard targetMode != currentMode else { return }
+
+        guard isConnected else {
+            switchToModeAndConnectIfPossible(targetMode)
             return
         }
 
@@ -486,17 +487,21 @@ final class VPNController: ObservableObject {
                 self.isConnected = false
                 self.activeMode = nil
                 self.clearDiagnostics()
-                self.runningMode = targetMode
-                self.savePrefs()
-
-                if targetMode != .proxy && !self.sudoConfigured {
-                    self.installSudoers(thenConnect: true)
-                } else if self.canConnect {
-                    self.connect()
-                } else {
-                    self.statusText = "已切换到\(targetMode.label)，请补全配置后连接"
-                }
+                self.switchToModeAndConnectIfPossible(targetMode)
             }
+        }
+    }
+
+    private func switchToModeAndConnectIfPossible(_ targetMode: RunningMode) {
+        runningMode = targetMode
+        savePrefs()
+
+        if targetMode != .proxy && !sudoConfigured {
+            installSudoers(thenConnect: true)
+        } else if canConnect {
+            connect()
+        } else {
+            statusText = "已切换到\(targetMode.label)，请补全配置后连接"
         }
     }
 
