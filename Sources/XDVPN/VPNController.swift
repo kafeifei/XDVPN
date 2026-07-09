@@ -257,11 +257,11 @@ final class VPNController: ObservableObject {
                 self.networkSatisfied = satisfied
                 let changed = self.changeDetector.observe(
                     fingerprint: physicalInterfaceFingerprint(names))
-                let ssidChanged = self.refreshCurrentWiFiSSID()
+                let ssidChanged = self.refreshCurrentWiFiSSID(
+                    fallbackMinInterval: changed ? 8 : 30
+                )
                 if changed || ssidChanged {
                     self.handleNetworkChanged()
-                } else if self.wifiOnDemandEnabled {
-                    _ = self.applyWiFiOnDemandPolicy(trigger: "网络状态刷新")
                 }
             }
         }
@@ -534,9 +534,9 @@ final class VPNController: ObservableObject {
     }
 
     @discardableResult
-    private func refreshCurrentWiFiSSID() -> Bool {
+    private func refreshCurrentWiFiSSID(fallbackMinInterval: TimeInterval = 8) -> Bool {
         guard let ssid = wifiSSIDReader.currentSSID() else {
-            scheduleWiFiSSIDFallback(trigger: "读取 Wi-Fi", minInterval: 8)
+            scheduleWiFiSSIDFallback(trigger: "读取 Wi-Fi", minInterval: fallbackMinInterval)
             return false
         }
         return setObservedWiFiSSID(ssid)
@@ -1016,16 +1016,19 @@ final class VPNController: ObservableObject {
     }
 
     private func pollTick() {
+        guard isConnected else { return }
+
         // 按当前模式检查对应的 openconnect 进程是否还活着
         let mode = activeMode ?? runningMode
         let running = mode == .proxy ? OpenConnectRunner.isProxyModeRunning : OpenConnectRunner.isRunning
         if isConnected, running, mode != .proxy {
-            // 标准模式才采流量/解析 session；纯代理模式拿不到这些数据
-            if tunnelInterface == nil { parseSessionFile() }
+            // 标准模式才采流量/解析 session；纯代理模式拿不到这些数据。
+            // openconnect 长时间运行中可能内部重连并换一个 utun，session 文件是最新来源。
+            parseSessionFile()
             updateTrafficStats()
             trackInbound()
         }
-        guard isConnected, !isBusy else { return }
+        guard !isBusy else { return }
 
         // 健康判定（纯逻辑、已单测）：进程死 / 黑洞 → 重连；健康 → 喂稳定窗口
         let facts = TunnelFacts(
@@ -1286,22 +1289,20 @@ final class VPNController: ObservableObject {
     // MARK: - 诊断数据采集
 
     private func parseSessionFile() {
-        guard let content = try? String(contentsOfFile: "/tmp/xdvpn.session", encoding: .utf8) else { return }
-        var routes: [String] = []
-        var hasDnsProxy = false
-        for line in content.components(separatedBy: .newlines) {
-            let parts = line.split(separator: "=", maxSplits: 1)
-            guard parts.count == 2 else { continue }
-            switch String(parts[0]) {
-            case "TUNDEV": tunnelInterface = String(parts[1])
-            case "VPNGATEWAY": vpnGateway = String(parts[1])
-            case "ROUTE_NET": routes.append(String(parts[1]))
-            case "DNS_PROXY_PID": hasDnsProxy = true
-            default: break
-            }
+        guard let content = try? String(contentsOfFile: "/tmp/xdvpn.session", encoding: .utf8),
+              let session = RouteScriptSession.parse(content) else {
+            return
         }
-        activeRoutes = routes
-        dnsProxyActive = hasDnsProxy
+
+        if let oldInterface = tunnelInterface, oldInterface != session.tunnelInterface {
+            appLog(.info, "检测到隧道接口切换：\(oldInterface) -> \(session.tunnelInterface)")
+            resetTrafficBaselines()
+        }
+
+        tunnelInterface = session.tunnelInterface
+        vpnGateway = session.vpnGateway
+        activeRoutes = session.routes
+        dnsProxyActive = session.dnsProxyActive
     }
 
     private func updateTrafficStats() {
@@ -1342,6 +1343,13 @@ final class VPNController: ObservableObject {
         socks5.stop()
         socks5Active = false
         socks5Error = nil
+    }
+
+    private func resetTrafficBaselines() {
+        trafficInRate = 0
+        trafficOutRate = 0
+        lastTrafficSample = nil
+        resetBlackholeTracking()
     }
 
     struct TunnelInfo {
