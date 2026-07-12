@@ -1299,16 +1299,26 @@ final class VPNController: ObservableObject {
             resetTrafficBaselines()
         }
 
-        tunnelInterface = session.tunnelInterface
-        vpnGateway = session.vpnGateway
-        activeRoutes = session.routes
-        dnsProxyActive = session.dnsProxyActive
+        if tunnelInterface != session.tunnelInterface {
+            tunnelInterface = session.tunnelInterface
+        }
+        if vpnGateway != session.vpnGateway {
+            vpnGateway = session.vpnGateway
+        }
+        if activeRoutes != session.routes {
+            activeRoutes = session.routes
+        }
+        if dnsProxyActive != session.dnsProxyActive {
+            dnsProxyActive = session.dnsProxyActive
+        }
     }
 
     private func updateTrafficStats() {
         guard let iface = tunnelInterface else { return }
         let info = Self.queryTunnel(iface)
-        tunnelIP = info.ip
+        if tunnelIP != info.ip {
+            tunnelIP = info.ip
+        }
 
         // 估算实时速率：当前样本 vs 上次样本
         let now = Date()
@@ -1317,14 +1327,24 @@ final class VPNController: ObservableObject {
             if dt > 0.1 {
                 let dIn = info.bytesIn >= last.inBytes ? info.bytesIn - last.inBytes : 0
                 let dOut = info.bytesOut >= last.outBytes ? info.bytesOut - last.outBytes : 0
-                trafficInRate = UInt64(Double(dIn) / dt)
-                trafficOutRate = UInt64(Double(dOut) / dt)
+                let newInRate = UInt64(Double(dIn) / dt)
+                let newOutRate = UInt64(Double(dOut) / dt)
+                if trafficInRate != newInRate {
+                    trafficInRate = newInRate
+                }
+                if trafficOutRate != newOutRate {
+                    trafficOutRate = newOutRate
+                }
             }
         }
         lastTrafficSample = (info.bytesIn, info.bytesOut, now)
 
-        trafficIn = info.bytesIn
-        trafficOut = info.bytesOut
+        if trafficIn != info.bytesIn {
+            trafficIn = info.bytesIn
+        }
+        if trafficOut != info.bytesOut {
+            trafficOut = info.bytesOut
+        }
     }
 
     private func clearDiagnostics() {

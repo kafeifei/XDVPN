@@ -151,12 +151,8 @@ private struct StatusHero: View {
     private var rightAccessory: some View {
         if vpn.isConnected, let t = vpn.connectedAt {
             VStack(alignment: .trailing, spacing: 2) {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(VPNController.formatDuration(Int(Date().timeIntervalSince(t))))
-                        .font(.system(size: compact ? 12 : 14, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .fixedSize()
-                }
+                ConnectionDurationText(connectedAt: t, compact: compact)
+                    .fixedSize()
                 if !compact {
                     Text("时长")
                         .font(.system(size: 9))
@@ -188,6 +184,81 @@ private struct StatusHero: View {
     }
     private var showSubtitle: Bool {
         !subtitle.isEmpty
+    }
+}
+
+/// The elapsed time changes every second, but it does not need to invalidate the
+/// surrounding SwiftUI hierarchy. Keep that clock inside a small AppKit view.
+private struct ConnectionDurationText: NSViewRepresentable {
+    let connectedAt: Date
+    let compact: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let label = NSTextField(labelWithString: "")
+        label.font = .monospacedSystemFont(ofSize: compact ? 12 : 14, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .right
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        context.coordinator.start(label: label, connectedAt: connectedAt)
+        return label
+    }
+
+    func updateNSView(_ label: NSTextField, context: Context) {
+        label.font = .monospacedSystemFont(ofSize: compact ? 12 : 14, weight: .regular)
+        context.coordinator.update(label: label, connectedAt: connectedAt)
+    }
+
+    static func dismantleNSView(_ nsView: NSTextField, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        private weak var label: NSTextField?
+        private var connectedAt: Date?
+        private var timer: Timer?
+
+        func start(label: NSTextField, connectedAt: Date) {
+            self.label = label
+            self.connectedAt = connectedAt
+            refresh()
+
+            let timer = Timer(
+                timeInterval: 1,
+                target: self,
+                selector: #selector(timerFired),
+                userInfo: nil,
+                repeats: true
+            )
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
+        }
+
+        func update(label: NSTextField, connectedAt: Date) {
+            self.label = label
+            guard self.connectedAt != connectedAt else { return }
+            self.connectedAt = connectedAt
+            refresh()
+        }
+
+        func stop() {
+            timer?.invalidate()
+            timer = nil
+        }
+
+        private func refresh() {
+            guard let connectedAt else { return }
+            let seconds = max(0, Int(Date().timeIntervalSince(connectedAt)))
+            label?.stringValue = VPNController.formatDuration(seconds)
+        }
+
+        @objc private func timerFired() {
+            refresh()
+        }
     }
 }
 
