@@ -73,6 +73,7 @@ final class VPNController: ObservableObject {
         }
     }
     @Published private(set) var isBusy: Bool = false
+    @Published private(set) var isConnecting: Bool = false
     @Published private(set) var statusText: String = "未连接"
     @Published private(set) var sudoConfigured: Bool = SudoersInstaller.isInstalled
 
@@ -162,6 +163,8 @@ final class VPNController: ObservableObject {
 
     private var lastTrafficSample: (inBytes: UInt64, outBytes: UInt64, at: Date)?
     private var pollTimer: Timer?
+    private var connectionTask: Task<Void, Never>?
+    private var connectionAttemptID: UUID?
 
     // 自动重连：纯决策逻辑在 XDVPNCore.ReconnectPolicy（已单测），
     // 这里只持有它 + 退避计时器 + 「是否处于自动重连流程」标志。
@@ -272,6 +275,15 @@ final class VPNController: ObservableObject {
     /// 旧隧道基本作废 → 干净重建（走统一的自动重连路径，含等网门控）。
     private func handleNetworkChanged() {
         if applyWiFiOnDemandPolicy(trigger: "网络切换") { return }
+        if isConnecting {
+            appLog(.warn, "连接过程中网络切换，取消旧连接")
+            cancelPendingConnection(
+                status: "网络已切换，准备重新连接…",
+                resetReconnect: false,
+                reconnectAfterCleanup: true
+            )
+            return
+        }
         guard isConnected, !isBusy else { return }
         statusText = "网络已切换，正在重建连接…"
         appLog(.warn, "网络已切换，重建连接")
@@ -610,6 +622,14 @@ final class VPNController: ObservableObject {
             wifiOnDemandStatusText = "当前 Wi-Fi「\(ssid)」规则：断开 VPN"
             appLog(.info, "\(trigger)：SSID \(ssid) 命中断开规则")
 
+            if isConnecting {
+                cancelPendingConnection(
+                    status: "当前 Wi-Fi「\(ssid)」配置为断开 VPN",
+                    resetReconnect: true,
+                    reconnectAfterCleanup: false
+                )
+                return true
+            }
             guard !isBusy else { return true }
             if isConnected {
                 disconnectDueToWiFiPolicy(ssid: ssid)
@@ -833,6 +853,7 @@ final class VPNController: ObservableObject {
         if silent, isWiFiPolicyBlockingAutomaticConnect(trigger: "自动连接") { return }
         guard canConnect else { return }
         isBusy = true
+        isConnecting = true
         statusText = silent ? "正在自动重连…" : "正在连接…"
         let mode = runningMode
         appLog(.info, silent ? "开始自动重连（\(mode.label)）" : "用户发起连接（\(mode.label)）")
@@ -845,11 +866,15 @@ final class VPNController: ObservableObject {
         let splitOn = mode == .split
         let splitCIDRs = collectSplitCIDRs()
         let domainSuffixes = collectDomainSuffixes()
+        let attemptID = UUID()
+        connectionAttemptID = attemptID
 
-        Task.detached { [weak self] in
+        let task = Task.detached { [weak self] in
             // 先清两种模式的所有残留 —— 用户可能从对方模式切过来，旧进程还在
             OpenConnectRunner.disconnectProxyMode()
             try? OpenConnectRunner.cleanup()  // 即使 proxyMode，前一次标准模式的 root 进程也得清
+
+            guard !Task.isCancelled else { return }
 
             if !proxyMode {
                 Self.writeSplitConfFile(enabled: splitOn, cidrs: splitCIDRs)
@@ -875,7 +900,10 @@ final class VPNController: ObservableObject {
             }
 
             await MainActor.run { [weak self] in
-                guard let self else { return }
+                guard let self, self.connectionAttemptID == attemptID else { return }
+                self.connectionAttemptID = nil
+                self.connectionTask = nil
+                self.isConnecting = false
                 self.isBusy = false
                 switch result {
                 case .success:
@@ -927,10 +955,15 @@ final class VPNController: ObservableObject {
                 }
             }
         }
+        connectionTask = task
     }
 
     func disconnect() {
-        guard isConnected || isBusy == false else { return }
+        if isConnecting {
+            cancelConnection()
+            return
+        }
+        guard isConnected, !isBusy else { return }
         // 用户主动断开 → 取消任何待执行的自动重连
         cancelAutoReconnect()
         isBusy = true
@@ -954,6 +987,48 @@ final class VPNController: ObservableObject {
                 self.activeMode = nil
                 self.clearDiagnostics()
                 self.statusText = errMsg ?? "未连接"
+            }
+        }
+    }
+
+    func cancelConnection() {
+        guard isConnecting else { return }
+        appLog(.info, "用户取消连接")
+        cancelPendingConnection(
+            status: "已取消连接",
+            resetReconnect: true,
+            reconnectAfterCleanup: false
+        )
+    }
+
+    private func cancelPendingConnection(
+        status: String,
+        resetReconnect: Bool,
+        reconnectAfterCleanup: Bool
+    ) {
+        let mode = runningMode
+        connectionAttemptID = nil
+        connectionTask?.cancel()
+        connectionTask = nil
+        isConnecting = false
+        isBusy = true
+        isConnected = false
+        activeMode = nil
+        statusText = "正在取消连接…"
+        if resetReconnect { cancelAutoReconnect() }
+
+        Task.detached { [weak self] in
+            OpenConnectRunner.cancelPendingConnection()
+            if mode == .proxy {
+                OpenConnectRunner.disconnectProxyMode()
+            } else {
+                try? OpenConnectRunner.cleanup()
+            }
+            await MainActor.run { [weak self] in
+                guard let self, self.connectionAttemptID == nil else { return }
+                self.isBusy = false
+                self.statusText = status
+                if reconnectAfterCleanup { self.onTunnelLost() }
             }
         }
     }

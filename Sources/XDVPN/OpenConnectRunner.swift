@@ -1,5 +1,29 @@
 import Foundation
 
+private final class PendingConnectionProcess: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pid: pid_t?
+
+    func register(_ pid: pid_t) {
+        lock.lock()
+        self.pid = pid
+        lock.unlock()
+    }
+
+    func clear(_ pid: pid_t) {
+        lock.lock()
+        if self.pid == pid { self.pid = nil }
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        let pid = self.pid
+        lock.unlock()
+        if let pid { kill(pid, SIGTERM) }
+    }
+}
+
 enum VPNError: LocalizedError {
     case openconnectNotFound
     case invalidProtocol
@@ -30,6 +54,8 @@ enum OpenConnectRunner {
     static let pidPath = "/tmp/xdvpn.pid"
     /// 纯代理模式独立 pid 文件（无 sudo，user-owned）
     static let proxyModePidPath = "/tmp/xdvpn-proxy.pid"
+    private static let pendingConnection = PendingConnectionProcess()
+    private static let connectionTimeout: TimeInterval = 30
 
     static let protocols = ["anyconnect", "nc", "gp", "pulse", "f5", "fortinet", "array"]
 
@@ -72,24 +98,20 @@ enum OpenConnectRunner {
         } catch {
             throw VPNError.connectFailed(error.localizedDescription)
         }
+        pendingConnection.register(proc.processIdentifier)
+        defer { pendingConnection.clear(proc.processIdentifier) }
 
         stdin.fileHandleForWriting.write(Data((password + "\n").utf8))
         try? stdin.fileHandleForWriting.close()
 
-        proc.waitUntilExit()
-
-        if proc.terminationStatus != 0 {
-            let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-            let msg = String(data: errData, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
-            // sudo 拒绝 → 免密未配置
-            if msg.contains("a password is required")
-                || msg.contains("sudo:")
-                || msg.contains("no tty present")
-            {
-                throw VPNError.sudoNotConfigured
-            }
-            throw VPNError.connectFailed(msg.trimmingCharacters(in: .whitespacesAndNewlines))
+        let failure = try waitForConnectionProcess(proc, stderr: stderr)
+        if failure.contains("a password is required")
+            || failure.contains("sudo:")
+            || failure.contains("no tty present")
+        {
+            throw VPNError.sudoNotConfigured
         }
+        if !failure.isEmpty { throw VPNError.connectFailed(failure) }
     }
 
     // MARK: - Cleanup（== Disconnect）
@@ -200,17 +222,43 @@ enum OpenConnectRunner {
         } catch {
             throw VPNError.connectFailed(error.localizedDescription)
         }
+        pendingConnection.register(proc.processIdentifier)
+        defer { pendingConnection.clear(proc.processIdentifier) }
 
         stdin.fileHandleForWriting.write(Data((password + "\n").utf8))
         try? stdin.fileHandleForWriting.close()
 
-        proc.waitUntilExit()
+        let failure = try waitForConnectionProcess(proc, stderr: stderr)
+        if !failure.isEmpty { throw VPNError.connectFailed(failure) }
+    }
 
-        if proc.terminationStatus != 0 {
-            let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-            let msg = String(data: errData, encoding: .utf8) ?? "exit \(proc.terminationStatus)"
-            throw VPNError.connectFailed(msg.trimmingCharacters(in: .whitespacesAndNewlines))
+    static func cancelPendingConnection() {
+        pendingConnection.cancel()
+    }
+
+    /// `--background` returns only after authentication and tunnel setup. Bound
+    /// that foreground phase so a stale HTTPS socket cannot keep the UI busy forever.
+    private static func waitForConnectionProcess(
+        _ proc: Process,
+        stderr: Pipe,
+        timeout: TimeInterval = connectionTimeout
+    ) throws -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        while proc.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
         }
+
+        if proc.isRunning {
+            killAndWait(proc.processIdentifier)
+            proc.waitUntilExit()
+            throw VPNError.connectFailed("连接服务器超时（\(Int(timeout)) 秒）")
+        }
+
+        guard proc.terminationStatus != 0 else { return "" }
+        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let message = String(data: errData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return message.isEmpty ? "exit \(proc.terminationStatus)" : message
     }
 
     /// 断开纯代理模式：kill openconnect + ocproxy

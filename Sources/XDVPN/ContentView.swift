@@ -1033,7 +1033,7 @@ private struct PrimaryActionButton: View {
     var body: some View {
         Button(action: tap) {
             HStack(spacing: 6) {
-                if vpn.isBusy {
+                if vpn.isBusy && !vpn.isConnecting {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: iconName)
@@ -1065,31 +1065,35 @@ private struct PrimaryActionButton: View {
     }
 
     private func tap() {
-        if vpn.isConnected { vpn.disconnect() }
+        if vpn.isConnecting { vpn.cancelConnection() }
+        else if vpn.isConnected { vpn.disconnect() }
         else if needsSudoBootstrap { vpn.installSudoers(thenConnect: true) }
         else { vpn.connect() }
     }
 
     private var iconName: String {
+        if vpn.isConnecting { return "xmark.circle.fill" }
         if vpn.isConnected { return "power.circle.fill" }
         if needsSudoBootstrap { return "wand.and.stars" }
         return "link"
     }
     private var label: String {
+        if vpn.isConnecting { return "取消连接" }
         if vpn.isBusy { return "请稍候…" }
         if vpn.isConnected { return "断开连接" }
         if needsSudoBootstrap { return "首次配置并连接" }
         return "连接"
     }
     private var buttonBg: Color {
-        if vpn.isConnected { return Color.secondary.opacity(0.12) }
+        if vpn.isConnected || vpn.isConnecting { return Color.secondary.opacity(0.12) }
         if disabled { return Design.accent.opacity(0.30) }
         return Design.accent
     }
     private var buttonFg: Color {
-        vpn.isConnected ? .primary : .white
+        vpn.isConnected || vpn.isConnecting ? .primary : .white
     }
     private var disabled: Bool {
+        if vpn.isConnecting { return false }
         if vpn.isBusy { return true }
         if vpn.isConnected { return false }
         if needsSudoBootstrap { return false }
