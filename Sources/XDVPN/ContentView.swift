@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import XDVPNCore
 
 // MARK: - Design tokens
 
@@ -49,6 +50,7 @@ struct MainWindowView: View {
 
     @State private var diagExpanded = false
     @State private var splitDetailsExpanded = false
+    @State private var showWiFiSettings = false
     @State private var showLogs = false
 
     var body: some View {
@@ -61,6 +63,8 @@ struct MainWindowView: View {
                 AccountSection()
 
                 ModeSection()
+
+                WiFiOnDemandSection(showSettings: $showWiFiSettings)
 
                 if vpn.runningMode == .split {
                     SplitTunnelSection(detailsExpanded: $splitDetailsExpanded)
@@ -88,6 +92,9 @@ struct MainWindowView: View {
         .scrollIndicators(.automatic)
         .frame(width: Design.mainWindowWidth)
         .background(WindowBackground())
+        .sheet(isPresented: $showWiFiSettings) {
+            WiFiOnDemandSettingsView()
+        }
         .sheet(isPresented: $showLogs) {
             LogPanelView()
         }
@@ -148,12 +155,8 @@ private struct StatusHero: View {
     private var rightAccessory: some View {
         if vpn.isConnected, let t = vpn.connectedAt {
             VStack(alignment: .trailing, spacing: 2) {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(VPNController.formatDuration(Int(Date().timeIntervalSince(t))))
-                        .font(.system(size: compact ? 12 : 14, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .fixedSize()
-                }
+                ConnectionDurationText(connectedAt: t, compact: compact)
+                    .fixedSize()
                 if !compact {
                     Text("时长")
                         .font(.system(size: 9))
@@ -185,6 +188,81 @@ private struct StatusHero: View {
     }
     private var showSubtitle: Bool {
         !subtitle.isEmpty
+    }
+}
+
+/// The elapsed time changes every second, but it does not need to invalidate the
+/// surrounding SwiftUI hierarchy. Keep that clock inside a small AppKit view.
+private struct ConnectionDurationText: NSViewRepresentable {
+    let connectedAt: Date
+    let compact: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let label = NSTextField(labelWithString: "")
+        label.font = .monospacedSystemFont(ofSize: compact ? 12 : 14, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .right
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        context.coordinator.start(label: label, connectedAt: connectedAt)
+        return label
+    }
+
+    func updateNSView(_ label: NSTextField, context: Context) {
+        label.font = .monospacedSystemFont(ofSize: compact ? 12 : 14, weight: .regular)
+        context.coordinator.update(label: label, connectedAt: connectedAt)
+    }
+
+    static func dismantleNSView(_ nsView: NSTextField, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        private weak var label: NSTextField?
+        private var connectedAt: Date?
+        private var timer: Timer?
+
+        func start(label: NSTextField, connectedAt: Date) {
+            self.label = label
+            self.connectedAt = connectedAt
+            refresh()
+
+            let timer = Timer(
+                timeInterval: 1,
+                target: self,
+                selector: #selector(timerFired),
+                userInfo: nil,
+                repeats: true
+            )
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
+        }
+
+        func update(label: NSTextField, connectedAt: Date) {
+            self.label = label
+            guard self.connectedAt != connectedAt else { return }
+            self.connectedAt = connectedAt
+            refresh()
+        }
+
+        func stop() {
+            timer?.invalidate()
+            timer = nil
+        }
+
+        private func refresh() {
+            guard let connectedAt else { return }
+            let seconds = max(0, Int(Date().timeIntervalSince(connectedAt)))
+            label?.stringValue = VPNController.formatDuration(seconds)
+        }
+
+        @objc private func timerFired() {
+            refresh()
+        }
     }
 }
 
@@ -264,14 +342,14 @@ private struct ModeSection: View {
                     Spacer()
                 }
 
-                Picker("", selection: $vpn.runningMode) {
+                Picker("", selection: modeSelection) {
                     ForEach(VPNController.RunningMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .disabled(vpn.isConnected || vpn.isBusy)
+                .disabled(vpn.isBusy)
 
                 Text(currentSummary)
                     .font(.system(size: 11))
@@ -279,12 +357,19 @@ private struct ModeSection: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if vpn.isConnected {
-                    Text("切换模式需先断开 VPN")
+                    Text("切换模式会断开当前 VPN 并自动重连")
                         .font(.system(size: 10))
                         .foregroundStyle(.orange)
                 }
             }
         }
+    }
+
+    private var modeSelection: Binding<VPNController.RunningMode> {
+        Binding(
+            get: { vpn.runningMode },
+            set: { vpn.selectMode($0, presentingWindow: NSApp.keyWindow) }
+        )
     }
 
     private var iconName: String {
@@ -303,6 +388,299 @@ private struct ModeSection: View {
             return "VPN 分流：创建 utun 接口，仅勾选的网段走 VPN，其它流量走本机默认网络。浏览器可直接访问内网域名。需要 sudo 配置。"
         case .full:
             return "VPN 全局：创建 utun，所有外网流量都走 VPN 隧道（def1）。本地 LAN 仍可用，但任何上网请求都从公司出口出。需要 sudo 配置。"
+        }
+    }
+}
+
+// MARK: Wi-Fi on-demand section ─────────────────────────────────────
+
+private struct WiFiOnDemandSection: View {
+    @EnvironmentObject var vpn: VPNController
+    @Binding var showSettings: Bool
+
+    var body: some View {
+        Card(content: {
+            HStack(spacing: 10) {
+                Image(systemName: "wifi")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Design.accentDeep)
+                    .frame(width: 20)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Wi-Fi 按需连接")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(summary)
+                        .font(.system(size: 10))
+                        .foregroundStyle(vpn.pausedByWiFiPolicy ? .orange : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("配置 Wi-Fi 规则")
+
+                Toggle("", isOn: $vpn.wifiOnDemandEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            }
+        }, padding: 12)
+    }
+
+    private var summary: String {
+        guard vpn.wifiOnDemandEnabled else { return "未启用" }
+        if vpn.wifiOnDemandRules.isEmpty { return "已启用 · 暂无规则" }
+        return "\(vpn.wifiOnDemandRules.count) 条规则 · \(vpn.wifiOnDemandStatusText)"
+    }
+}
+
+private struct WiFiOnDemandSettingsView: View {
+    @EnvironmentObject var vpn: VPNController
+    @Environment(\.dismiss) private var dismiss
+    @State private var currentAction: WiFiOnDemandAction = .disconnectVPN
+    @State private var manualSSID = ""
+    @State private var manualAction: WiFiOnDemandAction = .disconnectVPN
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 9) {
+                Image(systemName: "wifi")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Design.accentDeep)
+                Text("Wi-Fi 按需连接设置")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Toggle("", isOn: $vpn.wifiOnDemandEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("关闭")
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    currentWiFiSection
+                    manualRuleSection
+                    ruleListSection
+                }
+                .padding(16)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .frame(width: 500, height: 480)
+        .background(WindowBackground())
+        .onAppear {
+            vpn.refreshWiFiSSID(requestPermissionIfNeeded: false)
+        }
+    }
+
+    private var currentWiFiSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("当前 Wi-Fi")
+                .font(.system(size: 12, weight: .semibold))
+
+            HStack(spacing: 8) {
+                Text(vpn.currentWiFiSSID ?? "未读取到 Wi-Fi")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(vpn.currentWiFiSSID == nil ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button {
+                    vpn.refreshWiFiSSID(requestPermissionIfNeeded: true)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .help("刷新当前 Wi-Fi")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: Design.fieldRadius, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+
+            HStack(spacing: 8) {
+                ActionPicker(selection: $currentAction)
+                    .frame(width: 112)
+                Button {
+                    vpn.addCurrentWiFiRule(action: currentAction)
+                } label: {
+                    Label("添加当前 Wi-Fi", systemImage: "plus")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(vpn.currentWiFiSSID == nil)
+                Spacer()
+            }
+        }
+    }
+
+    private var manualRuleSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("手动添加")
+                .font(.system(size: 12, weight: .semibold))
+
+            HStack(spacing: 8) {
+                TextField("SSID", text: $manualSSID)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                ActionPicker(selection: $manualAction)
+                    .frame(width: 112)
+                Button {
+                    vpn.addWiFiRule(ssid: manualSSID, action: manualAction)
+                    manualSSID = ""
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(manualSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("添加规则")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var ruleListSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("规则")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("\(vpn.wifiOnDemandRules.count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+
+            if vpn.wifiOnDemandRules.isEmpty {
+                HStack {
+                    Spacer()
+                    Text("暂无规则")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .padding(.vertical, 14)
+                    Spacer()
+                }
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(vpn.wifiOnDemandRules) { rule in
+                        WiFiRuleRow(rule: rule)
+                    }
+                }
+            }
+
+            if !vpn.wifiOnDemandStatusText.isEmpty {
+                Text(vpn.wifiOnDemandStatusText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(vpn.pausedByWiFiPolicy ? .orange : .secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+}
+
+private struct WiFiRuleRow: View {
+    @EnvironmentObject var vpn: VPNController
+    let rule: WiFiOnDemandRule
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: rule.action.iconName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(rule.action.tint)
+                .frame(width: 16)
+            Text(rule.ssid)
+                .font(.system(size: 12, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            ActionPicker(selection: Binding(
+                get: { rule.action },
+                set: { vpn.updateWiFiRule(id: rule.id, action: $0) }
+            ))
+            .frame(width: 112)
+            Button {
+                vpn.removeWiFiRule(id: rule.id)
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("删除规则")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: Design.fieldRadius, style: .continuous)
+                .fill(Color.secondary.opacity(0.07))
+        )
+    }
+}
+
+private struct ActionPicker: View {
+    @Binding var selection: WiFiOnDemandAction
+
+    var body: some View {
+        Picker("", selection: $selection) {
+            ForEach(WiFiOnDemandAction.allCases) { action in
+                Text(action.label).tag(action)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .controlSize(.small)
+    }
+}
+
+private extension WiFiOnDemandAction {
+    var label: String {
+        switch self {
+        case .connectVPN: return "连接 VPN"
+        case .disconnectVPN: return "断开 VPN"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .connectVPN: return "link"
+        case .disconnectVPN: return "power"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .connectVPN: return Design.accentDeep
+        case .disconnectVPN: return .orange
         }
     }
 }
@@ -763,7 +1141,7 @@ private struct PrimaryActionButton: View {
     var body: some View {
         Button(action: tap) {
             HStack(spacing: 6) {
-                if vpn.isBusy {
+                if vpn.isBusy && !vpn.isConnecting {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: iconName)
@@ -795,31 +1173,35 @@ private struct PrimaryActionButton: View {
     }
 
     private func tap() {
-        if vpn.isConnected { vpn.disconnect() }
+        if vpn.isConnecting { vpn.cancelConnection() }
+        else if vpn.isConnected { vpn.disconnect() }
         else if needsSudoBootstrap { vpn.installSudoers(thenConnect: true) }
         else { vpn.connect() }
     }
 
     private var iconName: String {
+        if vpn.isConnecting { return "xmark.circle.fill" }
         if vpn.isConnected { return "power.circle.fill" }
         if needsSudoBootstrap { return "wand.and.stars" }
         return "link"
     }
     private var label: String {
+        if vpn.isConnecting { return "取消连接" }
         if vpn.isBusy { return "请稍候…" }
         if vpn.isConnected { return "断开连接" }
         if needsSudoBootstrap { return "首次配置并连接" }
         return "连接"
     }
     private var buttonBg: Color {
-        if vpn.isConnected { return Color.secondary.opacity(0.12) }
+        if vpn.isConnected || vpn.isConnecting { return Color.secondary.opacity(0.12) }
         if disabled { return Design.accent.opacity(0.30) }
         return Design.accent
     }
     private var buttonFg: Color {
-        vpn.isConnected ? .primary : .white
+        vpn.isConnected || vpn.isConnecting ? .primary : .white
     }
     private var disabled: Bool {
+        if vpn.isConnecting { return false }
         if vpn.isBusy { return true }
         if vpn.isConnected { return false }
         if needsSudoBootstrap { return false }
