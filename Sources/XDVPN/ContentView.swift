@@ -50,6 +50,7 @@ struct MainWindowView: View {
 
     @State private var diagExpanded = false
     @State private var splitDetailsExpanded = false
+    @State private var showWiFiSettings = false
     @State private var showLogs = false
 
     var body: some View {
@@ -63,7 +64,7 @@ struct MainWindowView: View {
 
                 ModeSection()
 
-                WiFiOnDemandSection()
+                WiFiOnDemandSection(showSettings: $showWiFiSettings)
 
                 if vpn.runningMode == .split {
                     SplitTunnelSection(detailsExpanded: $splitDetailsExpanded)
@@ -91,6 +92,9 @@ struct MainWindowView: View {
         .scrollIndicators(.automatic)
         .frame(width: Design.mainWindowWidth)
         .background(WindowBackground())
+        .sheet(isPresented: $showWiFiSettings) {
+            WiFiOnDemandSettingsView()
+        }
         .sheet(isPresented: $showLogs) {
             LogPanelView()
         }
@@ -392,110 +396,214 @@ private struct ModeSection: View {
 
 private struct WiFiOnDemandSection: View {
     @EnvironmentObject var vpn: VPNController
+    @Binding var showSettings: Bool
+
+    var body: some View {
+        Card(content: {
+            HStack(spacing: 10) {
+                Image(systemName: "wifi")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Design.accentDeep)
+                    .frame(width: 20)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Wi-Fi 按需连接")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(summary)
+                        .font(.system(size: 10))
+                        .foregroundStyle(vpn.pausedByWiFiPolicy ? .orange : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("配置 Wi-Fi 规则")
+
+                Toggle("", isOn: $vpn.wifiOnDemandEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            }
+        }, padding: 12)
+    }
+
+    private var summary: String {
+        guard vpn.wifiOnDemandEnabled else { return "未启用" }
+        if vpn.wifiOnDemandRules.isEmpty { return "已启用 · 暂无规则" }
+        return "\(vpn.wifiOnDemandRules.count) 条规则 · \(vpn.wifiOnDemandStatusText)"
+    }
+}
+
+private struct WiFiOnDemandSettingsView: View {
+    @EnvironmentObject var vpn: VPNController
+    @Environment(\.dismiss) private var dismiss
     @State private var currentAction: WiFiOnDemandAction = .disconnectVPN
-    @State private var manualSSID: String = ""
+    @State private var manualSSID = ""
     @State private var manualAction: WiFiOnDemandAction = .disconnectVPN
 
     var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "wifi")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Design.accentDeep)
-                    Text("Wi-Fi 按需连接")
-                        .font(.system(size: 13, weight: .semibold))
-                    Spacer()
-                    Toggle("", isOn: $vpn.wifiOnDemandEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                }
-
-                HStack(spacing: 8) {
-                    Text("当前")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 34, alignment: .leading)
-                    Text(vpn.currentWiFiSSID ?? "未读取到 Wi-Fi")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(vpn.currentWiFiSSID == nil ? .secondary : .primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Button {
-                        vpn.refreshWiFiSSID(requestPermissionIfNeeded: true)
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .buttonStyle(.plain)
-                    .help("刷新当前 Wi-Fi")
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(
-                    RoundedRectangle(cornerRadius: Design.fieldRadius, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
-                )
-
-                HStack(spacing: 8) {
-                    ActionPicker(selection: $currentAction)
-                        .frame(width: 112)
-                    Button {
-                        vpn.addCurrentWiFiRule(action: currentAction)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text("添加当前 Wi-Fi")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                    }
-                    .buttonStyle(.bordered)
+        VStack(spacing: 0) {
+            HStack(spacing: 9) {
+                Image(systemName: "wifi")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Design.accentDeep)
+                Text("Wi-Fi 按需连接设置")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Toggle("", isOn: $vpn.wifiOnDemandEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
                     .controlSize(.small)
-                    .disabled(vpn.currentWiFiSSID == nil)
-                    Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
                 }
-
-                HStack(spacing: 8) {
-                    TextField("手动输入 SSID", text: $manualSSID)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-                    ActionPicker(selection: $manualAction)
-                        .frame(width: 112)
-                    Button {
-                        vpn.addWiFiRule(ssid: manualSSID, action: manualAction)
-                        manualSSID = ""
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(manualSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("添加规则")
-                }
-
-                if !vpn.wifiOnDemandRules.isEmpty {
-                    Divider()
-                    VStack(spacing: 6) {
-                        ForEach(vpn.wifiOnDemandRules) { rule in
-                            WiFiRuleRow(rule: rule)
-                        }
-                    }
-                }
-
-                if !vpn.wifiOnDemandStatusText.isEmpty {
-                    Text(vpn.wifiOnDemandStatusText)
-                        .font(.system(size: 10))
-                        .foregroundStyle(vpn.pausedByWiFiPolicy ? .orange : .secondary)
-                        .lineLimit(2)
-                }
+                .buttonStyle(.plain)
+                .help("关闭")
+                .keyboardShortcut(.cancelAction)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    currentWiFiSection
+                    manualRuleSection
+                    ruleListSection
+                }
+                .padding(16)
+            }
+            .scrollBounceBehavior(.basedOnSize)
         }
+        .frame(width: 500, height: 480)
+        .background(WindowBackground())
         .onAppear {
             vpn.refreshWiFiSSID(requestPermissionIfNeeded: false)
+        }
+    }
+
+    private var currentWiFiSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("当前 Wi-Fi")
+                .font(.system(size: 12, weight: .semibold))
+
+            HStack(spacing: 8) {
+                Text(vpn.currentWiFiSSID ?? "未读取到 Wi-Fi")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(vpn.currentWiFiSSID == nil ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button {
+                    vpn.refreshWiFiSSID(requestPermissionIfNeeded: true)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .help("刷新当前 Wi-Fi")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: Design.fieldRadius, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+
+            HStack(spacing: 8) {
+                ActionPicker(selection: $currentAction)
+                    .frame(width: 112)
+                Button {
+                    vpn.addCurrentWiFiRule(action: currentAction)
+                } label: {
+                    Label("添加当前 Wi-Fi", systemImage: "plus")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(vpn.currentWiFiSSID == nil)
+                Spacer()
+            }
+        }
+    }
+
+    private var manualRuleSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("手动添加")
+                .font(.system(size: 12, weight: .semibold))
+
+            HStack(spacing: 8) {
+                TextField("SSID", text: $manualSSID)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                ActionPicker(selection: $manualAction)
+                    .frame(width: 112)
+                Button {
+                    vpn.addWiFiRule(ssid: manualSSID, action: manualAction)
+                    manualSSID = ""
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(manualSSID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("添加规则")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var ruleListSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("规则")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("\(vpn.wifiOnDemandRules.count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+
+            if vpn.wifiOnDemandRules.isEmpty {
+                HStack {
+                    Spacer()
+                    Text("暂无规则")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .padding(.vertical, 14)
+                    Spacer()
+                }
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(vpn.wifiOnDemandRules) { rule in
+                        WiFiRuleRow(rule: rule)
+                    }
+                }
+            }
+
+            if !vpn.wifiOnDemandStatusText.isEmpty {
+                Text(vpn.wifiOnDemandStatusText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(vpn.pausedByWiFiPolicy ? .orange : .secondary)
+                    .lineLimit(2)
+            }
         }
     }
 }
