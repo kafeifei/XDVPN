@@ -1,9 +1,11 @@
 import Foundation
 
-/// 由一组接口名算出「物理出口指纹」：滤掉 utun*（VPN 自己的虚拟接口），排序去序后拼接。
+/// 由一组接口名算出「物理出口指纹」：滤掉 utun*（VPN 自己的虚拟接口），排序去重后拼接。
 /// 指纹变化 = 物理出口集合变了 = 换网 / 漫游到不同接口 / 插拔网线。
+/// 必须去重：NWPath.availableInterfaces 会把同一接口按路径类型报多次（如 [en1, en1]），
+/// 重复次数随路由变化（VPN 建立/拆除）抖动，不去重会被误判成换网。
 public func physicalInterfaceFingerprint(_ names: [String]) -> String {
-    names.filter { !$0.hasPrefix("utun") }.sorted().joined(separator: ",")
+    Set(names.filter { !$0.hasPrefix("utun") }).sorted().joined(separator: ",")
 }
 
 /// 换网检测器（纯逻辑、可单测）。规则：

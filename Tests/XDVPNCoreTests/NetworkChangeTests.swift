@@ -9,6 +9,20 @@ final class NetworkChangeTests: XCTestCase {
         XCTAssertEqual(physicalInterfaceFingerprint([]), "")
     }
 
+    func test_fingerprint_dedupsRepeatedInterfaces() {
+        // NWPath.availableInterfaces 会把同一接口按路径类型报多次（如 [en1, en1]），
+        // 重复次数随 VPN 建立/拆除抖动；指纹必须去重，否则被误判成换网。
+        XCTAssertEqual(physicalInterfaceFingerprint(["en1", "en1"]), "en1")
+        XCTAssertEqual(physicalInterfaceFingerprint(["en1", "en1", "utun8", "en0"]), "en0,en1")
+    }
+
+    func test_duplicateCountFlap_doesNotTrigger() {
+        // 实机复现：连接前 [en1]，VPN 建立引起路由变化后 [en1, en1]——不是换网
+        var d = NetworkChangeDetector()
+        _ = d.observe(fingerprint: physicalInterfaceFingerprint(["en1"]))
+        XCTAssertFalse(d.observe(fingerprint: physicalInterfaceFingerprint(["en1", "en1"])))
+    }
+
     func test_firstObservation_doesNotTrigger() {
         var d = NetworkChangeDetector()
         XCTAssertFalse(d.observe(fingerprint: "en0"))
