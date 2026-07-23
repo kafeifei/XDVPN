@@ -26,6 +26,8 @@ enum VPNError: LocalizedError {
 /// 3) disconnect == cleanup，完全同一段代码（跑 xdvpn-cleanup helper）
 ///    → 没有"修复路由"的概念，也没有分叉路径
 enum OpenConnectRunner {
+    /// Homebrew 构建的 GnuTLS 会写死构建机上的 CA 路径；运行时显式使用 macOS 系统 CA。
+    static let caFilePath = "/etc/ssl/cert.pem"
     /// openconnect 写的 pid 文件（/tmp，reboot 持久但 3 天无访问会被 periodic 清）
     static let pidPath = "/tmp/xdvpn.pid"
     /// 纯代理模式独立 pid 文件（无 sudo，user-owned）
@@ -167,6 +169,9 @@ enum OpenConnectRunner {
         guard let openconnectBin = locateBundledOpenconnect() else {
             throw VPNError.connectFailed("找不到 bundled openconnect")
         }
+        guard FileManager.default.isReadableFile(atPath: caFilePath) else {
+            throw VPNError.connectFailed("系统 CA 证书不可读：\(caFilePath)")
+        }
         guard let ocproxyBin = locateOcproxy() else {
             throw VPNError.connectFailed("找不到 ocproxy。请 brew install ocproxy，或重新打包 app")
         }
@@ -178,6 +183,7 @@ enum OpenConnectRunner {
         proc.executableURL = URL(fileURLWithPath: openconnectBin)
         proc.arguments = [
             "--background",
+            "--cafile=" + caFilePath,
             // 客户端每 5s 主动 DPD 探死链：服务端 idle 踢会话 / DTLS 假死后秒级被发现，
             // openconnect 自愈失败即退出，pollTick 的进程探活随即接管重连。零 sudo 代价（user 态）。
             "--force-dpd=5",

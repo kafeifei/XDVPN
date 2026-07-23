@@ -8,6 +8,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 MODE="${1:-app}"
+CA_FILE="/etc/ssl/cert.pem"
+
+if [[ ! -r "$CA_FILE" ]]; then
+    echo "error: macOS CA bundle not readable: $CA_FILE" >&2
+    exit 1
+fi
 
 # 从 Info.plist 读版本号
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
@@ -43,7 +49,7 @@ find "$APP/Contents/Resources/openconnect" -type f \( -perm +111 -o -name '*.dyl
 codesign --force --deep --sign - "$APP"
 
 echo "==> verifying bundled openconnect"
-"$APP/Contents/Resources/openconnect/bin/openconnect" --version | head -n 1
+"$APP/Contents/Resources/openconnect/bin/openconnect" --cafile="$CA_FILE" --version | head -n 1
 
 echo ""
 echo "✅ 构建完成：$APP"

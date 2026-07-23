@@ -5,7 +5,7 @@ import Foundation
 enum SudoersInstaller {
     /// 每次改 helper 脚本内容后递增。isInstalled 会校验磁盘上的版本号，
     /// 不匹配 → sudoConfigured=false → UI 自动提示"一键配置"覆盖升级。
-    static let helperVersion = 9
+    static let helperVersion = 10
 
     static let sudoersPath = "/etc/sudoers.d/xdvpn"
     static let privilegedHelperParentDir = "/Library/PrivilegedHelperTools"
@@ -113,6 +113,7 @@ enum SudoersInstaller {
 
         OPENCONNECT="\#(installedOpenConnectPath)"
         ROUTE_SCRIPT="\#(routeScriptPath)"
+        CA_FILE="\#(OpenConnectRunner.caFilePath)"
         PID_FILE="/tmp/xdvpn.pid"
 
         usage() {
@@ -158,9 +159,14 @@ enum SudoersInstaller {
             echo "route script not executable: $ROUTE_SCRIPT" >&2
             exit 127
         fi
+        if [ ! -r "$CA_FILE" ]; then
+            echo "CA file not readable: $CA_FILE" >&2
+            exit 66
+        fi
 
         exec "$OPENCONNECT" \
             --background \
+            --cafile="$CA_FILE" \
             --pid-file="$PID_FILE" \
             --script="$ROUTE_SCRIPT" \
             --protocol="$PROTOCOL" \
