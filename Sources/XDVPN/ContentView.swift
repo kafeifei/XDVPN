@@ -47,6 +47,8 @@ struct MainWindowView: View {
     @EnvironmentObject var vpn: VPNController
     @EnvironmentObject var updater: UpdateChecker
 
+    let maximumHeight: CGFloat
+
     @State private var diagExpanded = false
     @State private var splitDetailsExpanded = false
     @State private var showLogs = false
@@ -87,6 +89,7 @@ struct MainWindowView: View {
         .scrollBounceBehavior(.basedOnSize)
         .scrollIndicators(.automatic)
         .frame(width: Design.mainWindowWidth)
+        .frame(maxHeight: maximumHeight)
         .background(WindowBackground())
         .sheet(isPresented: $showLogs) {
             LogPanelView()
