@@ -8,6 +8,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 MODE="${1:-app}"
+CA_FILE="/etc/ssl/cert.pem"
+
+if [[ ! -r "$CA_FILE" ]]; then
+    echo "error: macOS CA bundle not readable: $CA_FILE" >&2
+    exit 1
+fi
 
 # 从 Info.plist 读版本号
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
@@ -43,7 +49,29 @@ find "$APP/Contents/Resources/openconnect" -type f \( -perm +111 -o -name '*.dyl
 codesign --force --deep --sign - "$APP"
 
 echo "==> verifying bundled openconnect"
-"$APP/Contents/Resources/openconnect/bin/openconnect" --version | head -n 1
+"$APP/Contents/Resources/openconnect/bin/openconnect" --cafile="$CA_FILE" --version | head -n 1
+
+echo "==> verifying clean-system portability"
+while IFS= read -r -d '' runtime_file; do
+    file "$runtime_file" | grep -q 'Mach-O' || continue
+    if otool -L "$runtime_file" | tail -n +2 | awk '{print $1}' \
+        | grep -Eq '^(/opt/homebrew|/usr/local)(/|$)'; then
+        echo "error: Homebrew dependency remains in $runtime_file" >&2
+        otool -L "$runtime_file" >&2
+        exit 1
+    fi
+    if otool -l "$runtime_file" | awk '/cmd LC_RPATH/{getline; getline; print $2}' \
+        | grep -Eq '^(/opt/homebrew|/usr/local)(/|$)'; then
+        echo "error: Homebrew rpath remains in $runtime_file" >&2
+        exit 1
+    fi
+done < <(find "$APP/Contents" -type f -print0)
+
+env -i HOME=/tmp PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/tmp \
+    sandbox-exec -p '(version 1) (allow default) (deny file-read* (subpath "/opt/homebrew")) (deny file-read* (subpath "/usr/local"))' \
+    "$APP/Contents/Resources/openconnect/bin/openconnect" \
+    --cafile="$CA_FILE" --version | head -n 1
+codesign --verify --deep --strict "$APP"
 
 echo ""
 echo "✅ 构建完成：$APP"

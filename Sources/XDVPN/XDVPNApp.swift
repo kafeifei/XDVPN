@@ -326,8 +326,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func showMainWindow() {
         if mainWindow == nil {
+            let screenH = NSScreen.main?.visibleFrame.height ?? 800
+            let maximumHeight = screenH - 40
             let hosting = NSHostingController(
-                rootView: MainWindowView()
+                rootView: MainWindowView(maximumHeight: maximumHeight)
                     .environmentObject(controller)
                     .environmentObject(updater)
                     .environment(\.openMainWindow, OpenMainWindowAction { [weak self] in
@@ -342,9 +344,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
 
-            let screenH = NSScreen.main?.visibleFrame.height ?? 800
             window.contentMinSize = NSSize(width: Design.mainWindowWidth, height: 300)
-            window.contentMaxSize = NSSize(width: Design.mainWindowWidth, height: screenH - 40)
+            window.contentMaxSize = NSSize(width: Design.mainWindowWidth, height: maximumHeight)
 
             window.setFrameAutosaveName("com.kafeifei.xdvpn.MainWindow")
             window.center()
