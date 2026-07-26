@@ -4,6 +4,37 @@ import Foundation
 import SwiftUI
 import XDVPNCore
 
+/// 高频流量采样独立于 VPNController，避免每秒采样触发整个主窗口的
+/// `VPNController.objectWillChange`。SwiftUI 中只有诊断区域需要观察它；
+/// 状态栏也直接订阅这一份合并后的快照。
+struct TrafficSnapshot: Equatable, Sendable {
+    var bytesIn: UInt64 = 0
+    var bytesOut: UInt64 = 0
+    var bytesInRate: UInt64 = 0
+    var bytesOutRate: UInt64 = 0
+}
+
+@MainActor
+final class TrafficMonitor: ObservableObject {
+    @Published private(set) var snapshot = TrafficSnapshot()
+
+    func update(_ next: TrafficSnapshot) {
+        guard snapshot != next else { return }
+        snapshot = next
+    }
+
+    func reset() {
+        update(TrafficSnapshot())
+    }
+
+    func resetRates() {
+        var next = snapshot
+        next.bytesInRate = 0
+        next.bytesOutRate = 0
+        update(next)
+    }
+}
+
 /// 总控。v0.3 相比 v0.2 大幅瘦身：
 /// - 删掉 HealthChecker（1Hz 轮询路由表的复杂逻辑不再需要 —— def1 路由天然可恢复）
 /// - 删掉 LifecycleWatcher（sleep 处理直接塞 init，没必要单起一个 class）
@@ -85,11 +116,13 @@ final class VPNController: ObservableObject {
     @Published private(set) var vpnGateway: String?
     @Published private(set) var activeRoutes: [String] = []
     @Published private(set) var dnsProxyActive: Bool = false
-    @Published private(set) var trafficIn: UInt64 = 0
-    @Published private(set) var trafficOut: UInt64 = 0
-    /// 实时速率（字节/秒）—— 从两次 poll 之间的差值估算
-    @Published private(set) var trafficInRate: UInt64 = 0
-    @Published private(set) var trafficOutRate: UInt64 = 0
+    let trafficMonitor = TrafficMonitor()
+    var trafficIn: UInt64 { trafficMonitor.snapshot.bytesIn }
+    var trafficOut: UInt64 { trafficMonitor.snapshot.bytesOut }
+    /// 实时速率（字节/秒）—— 从两次 poll 之间的差值估算。
+    /// 这些 computed property 不再触发 VPNController.objectWillChange。
+    var trafficInRate: UInt64 { trafficMonitor.snapshot.bytesInRate }
+    var trafficOutRate: UInt64 { trafficMonitor.snapshot.bytesOutRate }
     /// 菜单栏标题里是否外显实时速度
     @Published var showSpeedInMenuBar: Bool = false {
         didSet { UserDefaults.standard.set(showSpeedInMenuBar, forKey: "xdvpn.showSpeedInMenuBar") }
@@ -1395,6 +1428,8 @@ final class VPNController: ObservableObject {
             tunnelIP = info.ip
         }
 
+        var next = trafficMonitor.snapshot
+
         // 估算实时速率：当前样本 vs 上次样本
         let now = Date()
         if let last = lastTrafficSample {
@@ -1404,22 +1439,14 @@ final class VPNController: ObservableObject {
                 let dOut = info.bytesOut >= last.outBytes ? info.bytesOut - last.outBytes : 0
                 let newInRate = UInt64(Double(dIn) / dt)
                 let newOutRate = UInt64(Double(dOut) / dt)
-                if trafficInRate != newInRate {
-                    trafficInRate = newInRate
-                }
-                if trafficOutRate != newOutRate {
-                    trafficOutRate = newOutRate
-                }
+                next.bytesInRate = newInRate
+                next.bytesOutRate = newOutRate
             }
         }
         lastTrafficSample = (info.bytesIn, info.bytesOut, now)
-
-        if trafficIn != info.bytesIn {
-            trafficIn = info.bytesIn
-        }
-        if trafficOut != info.bytesOut {
-            trafficOut = info.bytesOut
-        }
+        next.bytesIn = info.bytesIn
+        next.bytesOut = info.bytesOut
+        trafficMonitor.update(next)
     }
 
     private func clearDiagnostics() {
@@ -1429,10 +1456,7 @@ final class VPNController: ObservableObject {
         vpnGateway = nil
         activeRoutes = []
         dnsProxyActive = false
-        trafficIn = 0
-        trafficOut = 0
-        trafficInRate = 0
-        trafficOutRate = 0
+        trafficMonitor.reset()
         lastTrafficSample = nil
         // VPN 没了 socks 也必须停（出站绑的接口已无效）
         socks5.stop()
@@ -1441,8 +1465,7 @@ final class VPNController: ObservableObject {
     }
 
     private func resetTrafficBaselines() {
-        trafficInRate = 0
-        trafficOutRate = 0
+        trafficMonitor.resetRates()
         lastTrafficSample = nil
         resetBlackholeTracking()
     }

@@ -80,7 +80,10 @@ struct MainWindowView: View {
                 }
 
                 if vpn.isConnected {
-                    DiagnosticsSection(isExpanded: $diagExpanded)
+                    DiagnosticsSection(
+                        traffic: vpn.trafficMonitor,
+                        isExpanded: $diagExpanded
+                    )
                 }
 
                 PrimaryActionButton()
@@ -895,6 +898,7 @@ private struct ProxySection: View {
 
 private struct DiagnosticsSection: View {
     @EnvironmentObject var vpn: VPNController
+    @ObservedObject var traffic: TrafficMonitor
     @Binding var isExpanded: Bool
 
     var body: some View {
@@ -909,8 +913,14 @@ private struct DiagnosticsSection: View {
                     Spacer()
                     // 纯代理模式没 utun，拿不到流量；其它两种模式才展示
                     if !vpn.useProxyMode {
-                        StatChip(icon: "arrow.up.right", value: VPNController.formatBytes(vpn.trafficOut))
-                        StatChip(icon: "arrow.down.left", value: VPNController.formatBytes(vpn.trafficIn))
+                        StatChip(
+                            icon: "arrow.up.right",
+                            value: VPNController.formatBytes(traffic.snapshot.bytesOut)
+                        )
+                        StatChip(
+                            icon: "arrow.down.left",
+                            value: VPNController.formatBytes(traffic.snapshot.bytesIn)
+                        )
                     }
                     Button {
                         withAnimation(.smooth(duration: 0.18)) { isExpanded.toggle() }

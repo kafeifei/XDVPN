@@ -135,6 +135,16 @@ final class MainWindow: NSWindow {
     }
 }
 
+private struct StatusRateText: Equatable {
+    let down: String
+    let up: String
+}
+
+private struct StatusItemPresentation: Equatable {
+    let isConnected: Bool
+    let rates: StatusRateText?
+}
+
 // MARK: - AppDelegate
 
 @MainActor
@@ -148,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var mainWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var lastStatusItemPresentation: StatusItemPresentation?
 
     // MARK: lifecycle
 
@@ -246,10 +257,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.refreshStatusItem() }
             .store(in: &cancellables)
 
-        // 直接订阅速率发布者 —— 每次 pollTimer 刷新速率（1Hz）都重画
-        Publishers.CombineLatest(controller.$trafficInRate, controller.$trafficOutRate)
+        // 流量在独立 monitor 中一次性发布。按最终显示文本去重，避免同一秒
+        // 上下行字段分别变化时重复合成图片，也避免数值变化但文本未变化时重画。
+        controller.trafficMonitor.$snapshot
+            .map { snapshot in
+                StatusRateText(
+                    down: VPNController.formatRate(snapshot.bytesInRate),
+                    up: VPNController.formatRate(snapshot.bytesOutRate)
+                )
+            }
+            .removeDuplicates()
             .receive(on: RunLoop.main)
-            .sink { [weak self] _, _ in
+            .sink { [weak self] _ in
                 guard let self else { return }
                 if self.controller.isConnected, self.controller.showSpeedInMenuBar {
                     self.refreshStatusItem()
@@ -260,23 +279,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshStatusItem() {
         guard let button = statusItem.button else { return }
-        button.image = composeStatusImage()
+        let presentation = currentStatusItemPresentation()
+        guard presentation != lastStatusItemPresentation else { return }
+        lastStatusItemPresentation = presentation
+
+        button.image = composeStatusImage(presentation)
         // 整体淡化：未连接时半透明（不变黑，跟随明暗模式自动适配）
-        button.alphaValue = controller.isConnected ? 1.0 : 0.4
+        button.alphaValue = presentation.isConnected ? 1.0 : 0.4
+    }
+
+    private func currentStatusItemPresentation() -> StatusItemPresentation {
+        let showSpeed = controller.isConnected
+            && controller.showSpeedInMenuBar
+            && !controller.useProxyMode
+        let rates: StatusRateText? = showSpeed
+            ? StatusRateText(
+                down: VPNController.formatRate(controller.trafficInRate),
+                up: VPNController.formatRate(controller.trafficOutRate)
+            )
+            : nil
+        return StatusItemPresentation(isConnected: controller.isConnected, rates: rates)
     }
 
     /// 把图标 + （可选）两行速度文字合成成一张 template NSImage，
     /// 自己负责在 22pt 高度内 vertical center，避免 NSButton 多行文字默认顶对齐的坑。
-    private func composeStatusImage() -> NSImage {
+    private func composeStatusImage(_ presentation: StatusItemPresentation) -> NSImage {
         let icon = MenuBarIcon.template()
         // 纯代理模式下没有 utun 接口，拿不到流量数据 —— 强制不显示，避免一直显示 0
-        let showSpeed = controller.isConnected
-            && controller.showSpeedInMenuBar
-            && !controller.useProxyMode
-        if !showSpeed { return icon }
+        guard let rates = presentation.rates else { return icon }
 
-        let downStr = VPNController.formatRate(controller.trafficInRate)
-        let upStr = VPNController.formatRate(controller.trafficOutRate)
+        let downStr = rates.down
+        let upStr = rates.up
 
         let font = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
         // template image：颜色用 .black，最终由系统按菜单栏明暗自动反色
@@ -336,16 +369,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self?.showMainWindow()
                     })
             )
-            hosting.sizingOptions = .preferredContentSize
+            // 只在创建时测量一次。持续绑定 preferredContentSize 会让每次实时状态
+            // 更新都从根节点重新 sizeThatFits 整个 ScrollView。
+            let measuredHeight = hosting.view.fittingSize.height
+            let fallbackHeight = min(maximumHeight, 720)
+            let initialHeight = measuredHeight.isFinite && measuredHeight > 0
+                ? min(maximumHeight, max(300, measuredHeight))
+                : fallbackHeight
+            hosting.sizingOptions = []
 
             let window = MainWindow(contentViewController: hosting)
             window.title = "XDVPN"
             window.titleVisibility = .visible
             window.styleMask = [.titled, .closable, .miniaturizable]
+            // 使用 ARC 强引用统一管理窗口，不启用 AppKit 的旧式 self-release。
+            // 红色关闭按钮后由 windowWillClose 主动断开 Hosting 树并置空 mainWindow。
             window.isReleasedWhenClosed = false
 
             window.contentMinSize = NSSize(width: Design.mainWindowWidth, height: 300)
             window.contentMaxSize = NSSize(width: Design.mainWindowWidth, height: maximumHeight)
+            window.setContentSize(NSSize(width: Design.mainWindowWidth, height: initialHeight))
 
             window.setFrameAutosaveName("com.kafeifei.xdvpn.MainWindow")
             window.center()
@@ -382,7 +425,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === mainWindow else { return }
-        DispatchQueue.main.async {
+        // 断开 NSWindow -> NSHostingController -> SwiftUI 的完整观察链，同时触发
+        // NSViewRepresentable.dismantleNSView，让时长 Timer 立即失效。
+        window.contentViewController = nil
+        mainWindow = nil
+
+        DispatchQueue.main.async { [weak self] in
+            // 用户若在关闭动画期间立刻重新打开，不要把新窗口切回 accessory。
+            guard self?.mainWindow == nil else { return }
             NSApp.setActivationPolicy(.accessory)
         }
     }
