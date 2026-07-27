@@ -869,10 +869,17 @@ final class VPNController: ObservableObject {
     /// 给 init 里的 self-heal cleanup 一点时间跑完，再走正常 connect 流程
     /// （connect 内部会再做一次 cleanup，所以即便 cleanup 还没跑完也安全）。
     func autoConnectIfNeeded() {
-        guard autoConnectOnLaunch else { return }
+        guard autoConnectOnLaunch || wifiOnDemandEnabled else { return }
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard let self else { return }
+            // Wi-Fi 规则和传统“启动时自动连接”是两套独立开关。即使后者关闭，
+            // 启动时也必须执行已启用的当前 SSID 规则。
+            if self.wifiOnDemandEnabled,
+               self.applyWiFiOnDemandPolicy(trigger: "启动 Wi-Fi 按需连接") {
+                return
+            }
+            guard self.autoConnectOnLaunch else { return }
             // canConnect 已经覆盖了：sudo 状态、凭据齐全、未在连接中
             // 启动自动连接是无人值守场景（远程维护机）→ 静默，不卡 Touch ID
             if self.isWiFiPolicyBlockingAutomaticConnect(trigger: "启动自动连接") { return }

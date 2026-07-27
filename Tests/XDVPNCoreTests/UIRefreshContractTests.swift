@@ -33,6 +33,14 @@ final class UIRefreshContractTests: XCTestCase {
         XCTAssertTrue(app.contains("guard presentation != lastStatusItemPresentation else { return }"))
     }
 
+    func test_launchEvaluatesWiFiRulesWithoutLegacyAutoConnect() throws {
+        let controller = try source("Sources/XDVPN/VPNController.swift")
+
+        XCTAssertTrue(controller.contains("guard autoConnectOnLaunch || wifiOnDemandEnabled else { return }"))
+        XCTAssertTrue(controller.contains("applyWiFiOnDemandPolicy(trigger: \"启动 Wi-Fi 按需连接\")"))
+        XCTAssertTrue(controller.contains("guard self.autoConnectOnLaunch else { return }"))
+    }
+
     private func source(_ relativePath: String) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
