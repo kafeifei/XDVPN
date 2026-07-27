@@ -178,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 启动时自动连接（远程维护机器场景）
         c.autoConnectIfNeeded()
+        updater.showCurrentReleaseNotesIfNeeded()
     }
 
     // MARK: status item
@@ -711,6 +712,13 @@ extension AppDelegate: NSMenuDelegate {
         }
         sub.addItem(update)
 
+        let releaseNotes = NSMenuItem(
+            title: "更新日志…",
+            action: #selector(menuShowReleaseNotes),
+            keyEquivalent: "")
+        releaseNotes.target = self
+        sub.addItem(releaseNotes)
+
         let version = makeDisabledItem("版本  v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
         version.attributedTitle = NSAttributedString(
             string: version.title,
@@ -753,6 +761,7 @@ extension AppDelegate: NSMenuDelegate {
         if updater.hasUpdate { updater.showUpdateWindow() }
         else { updater.check() }
     }
+    @objc private func menuShowReleaseNotes() { updater.showCurrentReleaseNotesWindow() }
     @objc private func menuShowUpdate() { updater.showUpdateWindow() }
     @objc private func menuUninstallSudo() { controller.uninstallSudoers() }
     @objc private func menuQuit() { NSApp.terminate(nil) }

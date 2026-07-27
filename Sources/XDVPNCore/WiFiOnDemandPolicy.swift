@@ -23,6 +23,22 @@ public struct WiFiOnDemandRule: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// 规范化系统观察到的 Wi-Fi 名称。
+///
+/// macOS 在应用没有定位权限时，`system_profiler` 可能返回字面量
+/// `<redacted>`。它不是 SSID，不能进入规则匹配或展示为当前网络。
+public enum ObservedWiFiSSID {
+    public static func normalized(_ ssid: String?) -> String? {
+        guard let ssid else { return nil }
+        let normalized = ssid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              normalized.caseInsensitiveCompare("<redacted>") != .orderedSame else {
+            return nil
+        }
+        return normalized
+    }
+}
+
 public enum WiFiOnDemandDecision: Equatable, Sendable {
     case noMatch
     case connect

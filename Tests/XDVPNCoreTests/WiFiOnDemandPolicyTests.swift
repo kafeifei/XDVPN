@@ -49,6 +49,17 @@ final class WiFiOnDemandPolicyTests: XCTestCase {
         XCTAssertEqual(policy.decision(for: "office"), .noMatch)
     }
 
+    func test_observedSSIDRejectsPrivacyPlaceholder() {
+        XCTAssertNil(ObservedWiFiSSID.normalized("<redacted>"))
+        XCTAssertNil(ObservedWiFiSSID.normalized("  <REDACTED>  "))
+    }
+
+    func test_observedSSIDTrimsRealNetworkName() {
+        XCTAssertEqual(ObservedWiFiSSID.normalized("  Office Wi-Fi  "), "Office Wi-Fi")
+        XCTAssertNil(ObservedWiFiSSID.normalized("  "))
+        XCTAssertNil(ObservedWiFiSSID.normalized(nil))
+    }
+
     func test_replacingOrAppendingUpdatesExistingRule() {
         let original = [WiFiOnDemandRule(ssid: "Office", action: .disconnectVPN)]
         let updated = WiFiOnDemandPolicy.replacingOrAppending(

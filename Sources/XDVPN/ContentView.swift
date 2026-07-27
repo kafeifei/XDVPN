@@ -498,7 +498,7 @@ private struct WiFiOnDemandSettingsView: View {
         .frame(width: 500, height: 480)
         .background(WindowBackground())
         .onAppear {
-            vpn.refreshWiFiSSID(requestPermissionIfNeeded: false)
+            vpn.refreshWiFiSSID(requestPermissionIfNeeded: true)
         }
     }
 
@@ -544,6 +544,20 @@ private struct WiFiOnDemandSettingsView: View {
                 .controlSize(.small)
                 .disabled(vpn.currentWiFiSSID == nil)
                 Spacer()
+            }
+
+            if vpn.wifiSSIDLocationPermissionRequired {
+                HStack(spacing: 6) {
+                    Image(systemName: "location.slash")
+                    Text("XDVPN 需要定位权限才能读取 Wi-Fi 名称。")
+                    Spacer()
+                    Button("打开定位服务设置") {
+                        vpn.openWiFiLocationSettings()
+                    }
+                    .buttonStyle(.link)
+                }
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
             }
         }
     }
@@ -976,6 +990,10 @@ private struct FooterRow: View {
             }
             Spacer()
             Button("运行日志") { showLogs = true }
+                .font(.system(size: 11))
+                .buttonStyle(.link)
+            Text("·").font(.system(size: 11)).foregroundStyle(.tertiary)
+            Button("更新日志") { updater.showCurrentReleaseNotesWindow() }
                 .font(.system(size: 11))
                 .buttonStyle(.link)
             Text("·").font(.system(size: 11)).foregroundStyle(.tertiary)

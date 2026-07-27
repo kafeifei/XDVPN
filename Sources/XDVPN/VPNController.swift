@@ -81,6 +81,7 @@ final class VPNController: ObservableObject {
     @Published private(set) var currentWiFiSSID: String?
     @Published private(set) var wifiOnDemandStatusText: String = "未启用"
     @Published private(set) var pausedByWiFiPolicy: Bool = false
+    @Published private(set) var wifiSSIDLocationPermissionRequired: Bool = false
 
     // MARK: - 分流（Split Tunnel）—— 仅在 runningMode == .split 时生效
     @Published var splitPreset10: Bool = true      // 10.0.0.0/8
@@ -245,11 +246,13 @@ final class VPNController: ObservableObject {
         loadPrefs()
         wifiSSIDReader.onAuthorizationChanged = { [weak self] in
             guard let self else { return }
+            self.updateWiFiSSIDLocationPermissionState()
             let changed = self.refreshCurrentWiFiSSID()
             if changed || self.wifiOnDemandEnabled {
                 _ = self.applyWiFiOnDemandPolicy(trigger: "Wi-Fi 权限变更")
             }
         }
+        updateWiFiSSIDLocationPermissionState()
         _ = refreshCurrentWiFiSSID()
         // 日志脱敏兜底：把当前内存密码注入 LogStore，万一某条 message 混入密码也被抹掉。
         // @MainActor 闭包；weak 捕获避免 LogStore.shared 长期持有 controller。
@@ -519,10 +522,14 @@ final class VPNController: ObservableObject {
     // MARK: - Wi-Fi 按需连接
 
     func refreshWiFiSSID(requestPermissionIfNeeded: Bool = false) {
+        updateWiFiSSIDLocationPermissionState()
         let changed = refreshCurrentWiFiSSID()
         if requestPermissionIfNeeded, currentWiFiSSID == nil {
             wifiSSIDReader.requestLocationPermissionIfNeeded()
-            wifiOnDemandStatusText = "正在读取当前 Wi-Fi…"
+            updateWiFiSSIDLocationPermissionState()
+            wifiOnDemandStatusText = missingWiFiSSIDStatusText(
+                pendingText: "正在读取当前 Wi-Fi…"
+            )
             scheduleWiFiSSIDFallback(trigger: "手动刷新 Wi-Fi", minInterval: 0)
         } else if currentWiFiSSID == nil {
             scheduleWiFiSSIDFallback(trigger: "刷新 Wi-Fi", minInterval: 5)
@@ -530,6 +537,15 @@ final class VPNController: ObservableObject {
         if changed, wifiOnDemandEnabled {
             _ = applyWiFiOnDemandPolicy(trigger: "刷新 Wi-Fi")
         }
+    }
+
+    func openWiFiLocationSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"
+        ) else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     func evaluateWiFiOnDemandNow() {
@@ -581,15 +597,16 @@ final class VPNController: ObservableObject {
     @discardableResult
     private func refreshCurrentWiFiSSID(fallbackMinInterval: TimeInterval = 8) -> Bool {
         guard let ssid = wifiSSIDReader.currentSSID() else {
+            let changed = setObservedWiFiSSID(nil)
             scheduleWiFiSSIDFallback(trigger: "读取 Wi-Fi", minInterval: fallbackMinInterval)
-            return false
+            return changed
         }
         return setObservedWiFiSSID(ssid)
     }
 
     @discardableResult
     private func setObservedWiFiSSID(_ ssid: String?) -> Bool {
-        let normalized = ssid.map(WiFiOnDemandRule.normalizedSSID).flatMap { $0.isEmpty ? nil : $0 }
+        let normalized = ObservedWiFiSSID.normalized(ssid)
         currentWiFiSSID = normalized
         let previous = lastObservedSSID
         lastObservedSSID = normalized
@@ -622,15 +639,28 @@ final class VPNController: ObservableObject {
                     if ssid != nil {
                         _ = self.applyWiFiOnDemandPolicy(trigger: "\(trigger)（系统信息）")
                     } else {
-                        self.wifiOnDemandStatusText = "未读取到当前 Wi-Fi"
+                        self.wifiOnDemandStatusText = self.missingWiFiSSIDStatusText()
                     }
                 } else if ssid != nil {
                     self.wifiOnDemandStatusText = "已读取当前 Wi-Fi"
                 } else {
-                    self.wifiOnDemandStatusText = "未读取到当前 Wi-Fi"
+                    self.wifiOnDemandStatusText = self.missingWiFiSSIDStatusText()
                 }
             }
         }
+    }
+
+    private func updateWiFiSSIDLocationPermissionState() {
+        wifiSSIDLocationPermissionRequired = wifiSSIDReader.isLocationPermissionRequired
+    }
+
+    private func missingWiFiSSIDStatusText(
+        pendingText: String = "未读取到当前 Wi-Fi"
+    ) -> String {
+        if wifiSSIDLocationPermissionRequired {
+            return "请在系统设置中允许 XDVPN 使用定位服务"
+        }
+        return pendingText
     }
 
     private var currentWiFiPolicyDecision: WiFiOnDemandDecision {
@@ -709,7 +739,7 @@ final class VPNController: ObservableObject {
             if let ssid = currentWiFiSSID {
                 wifiOnDemandStatusText = "当前 Wi-Fi「\(ssid)」未配置规则"
             } else {
-                wifiOnDemandStatusText = "未读取到当前 Wi-Fi"
+                wifiOnDemandStatusText = missingWiFiSSIDStatusText()
             }
             return false
         }

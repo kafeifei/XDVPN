@@ -41,6 +41,24 @@ final class UIRefreshContractTests: XCTestCase {
         XCTAssertTrue(controller.contains("guard self.autoConnectOnLaunch else { return }"))
     }
 
+    func test_wifiSettingsRequestsLocationPermissionBeforeReadingSSID() throws {
+        let content = try source("Sources/XDVPN/ContentView.swift")
+
+        XCTAssertTrue(content.contains("refreshWiFiSSID(requestPermissionIfNeeded: true)"))
+        XCTAssertFalse(content.contains("refreshWiFiSSID(requestPermissionIfNeeded: false)"))
+    }
+
+    func test_releaseNotesRemainAvailableAfterUpdate() throws {
+        let app = try source("Sources/XDVPN/XDVPNApp.swift")
+        let content = try source("Sources/XDVPN/ContentView.swift")
+        let build = try source("build.sh")
+
+        XCTAssertTrue(app.contains("updater.showCurrentReleaseNotesIfNeeded()"))
+        XCTAssertTrue(app.contains("menuShowReleaseNotes"))
+        XCTAssertTrue(content.contains("Button(\"更新日志\")"))
+        XCTAssertTrue(build.contains("RELEASE_NOTES.md"))
+    }
+
     private func source(_ relativePath: String) throws -> String {
         let repositoryRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

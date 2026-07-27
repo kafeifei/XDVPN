@@ -47,6 +47,7 @@ cp "$BIN_PATH/XDVPN" "$APP/Contents/MacOS/XDVPN"
 cp "$BIN_PATH/xdvpn-dns-proxy" "$APP/Contents/MacOS/xdvpn-dns-proxy"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/Icon.png "$APP/Contents/Resources/Icon.png"
+cp RELEASE_NOTES.md "$APP/Contents/Resources/RELEASE_NOTES.md"
 if [[ -f Resources/THIRD_PARTY_NOTICES.md ]]; then
     cp Resources/THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 fi

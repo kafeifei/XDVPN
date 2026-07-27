@@ -35,7 +35,7 @@ public struct GitHubReleaseMetadata: Equatable, Sendable {
         )
     }
 
-    private static func updateSection(from body: String?) -> String? {
+    public static func updateSection(from body: String?) -> String? {
         guard let body, !body.isEmpty else { return nil }
 
         let acceptedHeadings = ["更新了什么", "更新内容", "更新"]

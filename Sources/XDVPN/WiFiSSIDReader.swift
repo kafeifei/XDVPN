@@ -1,6 +1,7 @@
 import CoreLocation
 @preconcurrency import CoreWLAN
 import Foundation
+import XDVPNCore
 
 @MainActor
 final class WiFiSSIDReader: NSObject, CLLocationManagerDelegate {
@@ -13,10 +14,17 @@ final class WiFiSSIDReader: NSObject, CLLocationManagerDelegate {
         locationManager.delegate = self
     }
 
+    var isLocationPermissionRequired: Bool {
+        switch locationManager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            return false
+        default:
+            return true
+        }
+    }
+
     func currentSSID() -> String? {
-        guard let ssid = CWWiFiClient.shared().interface()?.ssid() else { return nil }
-        let normalized = ssid.trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty ? nil : normalized
+        ObservedWiFiSSID.normalized(CWWiFiClient.shared().interface()?.ssid())
     }
 
     nonisolated static func currentSSIDFromSystemProfiler() -> String? {
@@ -51,8 +59,9 @@ final class WiFiSSIDReader: NSObject, CLLocationManagerDelegate {
                       let ssid = current["_name"] as? String else {
                     continue
                 }
-                let normalized = ssid.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !normalized.isEmpty { return normalized }
+                if let normalized = ObservedWiFiSSID.normalized(ssid) {
+                    return normalized
+                }
             }
         }
         return nil

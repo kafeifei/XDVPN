@@ -21,6 +21,7 @@ final class UpdateChecker: ObservableObject {
     private let repo = "kafeifei/XDVPN"
     private var downloadDelegate: DownloadDelegate?
     private var updateWindow: NSWindow?
+    private var releaseNotesWindow: NSWindow?
     private var pollTimer: Timer?
 
     func startPolling(interval: TimeInterval = 600) {
@@ -85,6 +86,37 @@ final class UpdateChecker: ObservableObject {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         updateWindow = window
+    }
+
+    func showCurrentReleaseNotesWindow() {
+        if let window = releaseNotesWindow, window.isVisible {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let view = CurrentReleaseNotesView(
+            version: currentVersion,
+            notes: bundledReleaseNotes ?? "暂无更新日志。"
+        )
+        let hosting = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hosting)
+        window.title = "XDVPN 更新日志"
+        window.styleMask = [.titled, .closable]
+        window.level = .floating
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        releaseNotesWindow = window
+    }
+
+    func showCurrentReleaseNotesIfNeeded() {
+        guard bundledReleaseNotes != nil else { return }
+        let key = "xdvpn.lastShownReleaseNotesVersion"
+        guard UserDefaults.standard.string(forKey: key) != currentVersion else { return }
+        UserDefaults.standard.set(currentVersion, forKey: key)
+        showCurrentReleaseNotesWindow()
     }
 
     func performUpdate() {
@@ -193,6 +225,18 @@ final class UpdateChecker: ObservableObject {
         }
         return false
     }
+
+    private var currentVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
+
+    private var bundledReleaseNotes: String? {
+        guard let url = Bundle.main.url(forResource: "RELEASE_NOTES", withExtension: "md"),
+              let body = try? String(contentsOf: url, encoding: .utf8) else {
+            return nil
+        }
+        return GitHubReleaseMetadata.updateSection(from: body)
+    }
 }
 
 private enum UpdateError: Error {
@@ -256,6 +300,48 @@ private struct UpdateWindowView: View {
         }
         .padding(24)
         .frame(width: 420)
+    }
+}
+
+private struct CurrentReleaseNotesView: View {
+    let version: String
+    let notes: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 36))
+                .foregroundStyle(.blue)
+
+            Text("XDVPN v\(version)")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("更新了什么")
+                    .font(.subheadline.weight(.semibold))
+
+                ScrollView {
+                    Text(notes)
+                        .font(.system(size: 12))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(height: 180)
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.secondary.opacity(0.08))
+                )
+            }
+
+            Button("知道了") {
+                NSApp.keyWindow?.close()
+            }
+            .keyboardShortcut(.defaultAction)
+            .controlSize(.large)
+        }
+        .padding(24)
+        .frame(width: 440)
     }
 }
 
