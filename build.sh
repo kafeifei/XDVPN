@@ -18,6 +18,21 @@ fi
 # 从 Info.plist 读版本号
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
 
+if [[ "$MODE" == "release" ]]; then
+    NOTES_FILE="RELEASE_NOTES.md"
+    if [[ ! -f "$NOTES_FILE" ]] \
+        || ! grep -Fq "# XDVPN v${VERSION}" "$NOTES_FILE" \
+        || ! awk '
+            /^## 更新了什么[[:space:]]*$/ { in_updates = 1; next }
+            in_updates && /^## / { exit }
+            in_updates && NF { found = 1; exit }
+            END { exit !found }
+        ' "$NOTES_FILE"; then
+        echo "error: $NOTES_FILE must describe XDVPN v${VERSION} and include non-empty '## 更新了什么' content" >&2
+        exit 1
+    fi
+fi
+
 echo "==> swift build (v$VERSION)"
 swift build -c release
 

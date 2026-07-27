@@ -20,6 +20,19 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      - name: Validate tag and release notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          plist_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+          test "$version" = "$plist_version"
+          grep -Fq "# XDVPN v${version}" RELEASE_NOTES.md
+          awk '
+            /^## 更新了什么[[:space:]]*$/ { in_updates = 1; next }
+            in_updates && /^## / { exit }
+            in_updates && NF { found = 1; exit }
+            END { exit !found }
+          ' RELEASE_NOTES.md
+
       - name: Install OpenConnect and ocproxy for bundling
         run: |
           brew update
@@ -37,23 +50,4 @@ jobs:
         with:
           name: XDVPN ${{ github.ref_name }}
           files: build/XDVPN-v${{ steps.ver.outputs.version }}.zip
-          generate_release_notes: true
-          body: |
-            ## 安装
-
-            1. 下载下面的 `XDVPN-${{ github.ref_name }}.zip` 并解压
-            2. 把 `XDVPN.app` 拖进 `/Applications/`
-            3. 双击 `/Applications/XDVPN.app`；如果被 Gatekeeper 拦截，关闭提示
-            4. 打开"系统设置 → 隐私与安全性"，在页面底部点"仍要打开"，再确认打开
-               - 如果没有看到"仍要打开"：`xattr -dr com.apple.quarantine /Applications/XDVPN.app && open /Applications/XDVPN.app`
-            5. 菜单栏出现锁盾图标，点开，底部点"一键配置"安装系统组件（一次性）
-            6. 填协议/服务器/用户/密码，连接
-
-            ## OpenConnect
-
-            OpenConnect 已随 XDVPN.app 内置；用户机器不需要预装 Homebrew 或 openconnect。
-
-            ## 说明
-
-            - **未经 Apple 公证**：个人自用项目，没有 $99/年 开发者账号。源码公开，可自行 `./build.sh` 从头构建。
-            - **macOS 14+**：MenuBarExtra window 模式需要 Sonoma 起
+          body_path: RELEASE_NOTES.md

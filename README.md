@@ -95,7 +95,8 @@ brew install openconnect ocproxy   # 仅构建者需要，用户安装 Release �
 ./build.sh release                 # 构建 + 打包 zip
 ```
 
-改 `Resources/Info.plist` 版本号，打 tag 推送，GitHub Actions 自动发 Release。
+改 `Resources/Info.plist` 版本号，并同步更新 `RELEASE_NOTES.md` 的版本标题和“更新了什么”。
+打 tag 推送后，GitHub Actions 会校验两处版本一致，再自动构建并发布 Release。
 
 ## 卸载
 
