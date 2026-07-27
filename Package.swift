@@ -25,6 +25,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "xdvpn-dns-proxy",
+            dependencies: ["XDVPNCore"],
             path: "Sources/xdvpn-dns-proxy"
         ),
         .testTarget(
