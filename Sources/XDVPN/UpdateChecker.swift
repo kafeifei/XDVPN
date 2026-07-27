@@ -1,11 +1,13 @@
 import AppKit
 import Foundation
 import SwiftUI
+import XDVPNCore
 
 @MainActor
 final class UpdateChecker: ObservableObject {
     @Published private(set) var latestVersion: String?
     @Published private(set) var downloadURL: URL?
+    @Published private(set) var releaseNotes: String?
     @Published private(set) var isDownloading = false
     @Published private(set) var downloadProgress: Double = 0
     @Published private(set) var statusText: String?
@@ -38,32 +40,30 @@ final class UpdateChecker: ObservableObject {
 
         URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
             guard let data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = json["tag_name"] as? String,
-                  let assets = json["assets"] as? [[String: Any]] else { return }
-
-            let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-            let zip = assets.first {
-                ($0["name"] as? String)?.hasSuffix(".zip") == true
-            }
-            let dlURL = (zip?["browser_download_url"] as? String).flatMap { URL(string: $0) }
+                  let release = GitHubReleaseMetadata.parse(data) else { return }
 
             Task { @MainActor [weak self] in
-                self?.latestVersion = version
-                self?.downloadURL = dlURL
+                self?.latestVersion = release.version
+                self?.downloadURL = release.downloadURL
+                self?.releaseNotes = release.notes
             }
         }.resume()
     }
 
     #if DEBUG
-    func fakeUpdate(version: String) {
+    func fakeUpdate(
+        version: String,
+        notes: String = "- 展示本次更新说明。\n- 验证更新窗口滚动布局。"
+    ) {
         latestVersion = version
         downloadURL = URL(string: "https://github.com/\(repo)/releases")
+        releaseNotes = notes
     }
 
     func clearFakeUpdate() {
         latestVersion = nil
         downloadURL = nil
+        releaseNotes = nil
     }
     #endif
 
@@ -219,6 +219,26 @@ private struct UpdateWindowView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
+            if let notes = updater.releaseNotes, !notes.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("更新了什么")
+                        .font(.subheadline.weight(.semibold))
+
+                    ScrollView {
+                        Text(notes)
+                            .font(.system(size: 12))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(height: 160)
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.secondary.opacity(0.08))
+                    )
+                }
+            }
+
             if updater.isDownloading {
                 VStack(spacing: 8) {
                     ProgressView(value: updater.downloadProgress)
@@ -235,7 +255,7 @@ private struct UpdateWindowView: View {
             }
         }
         .padding(24)
-        .frame(width: 300)
+        .frame(width: 420)
     }
 }
 
