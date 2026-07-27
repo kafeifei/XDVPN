@@ -445,23 +445,7 @@ final class VPNController: ObservableObject {
     }
 
     func collectDomainSuffixes() -> [String] {
-        var seen = Set<String>()
-        return splitDomains
-            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            .map { $0.hasPrefix("*.") ? String($0.dropFirst(2)) : $0 }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") && Self.isValidDomainSuffix($0) }
-            .filter { seen.insert($0).inserted }
-    }
-
-    private static func isValidDomainSuffix(_ s: String) -> Bool {
-        let labels = s.split(separator: ".", omittingEmptySubsequences: false)
-        guard !labels.isEmpty else { return false }
-        return labels.allSatisfy { label in
-            !label.isEmpty && label.count <= 63
-                && label.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
-                && !label.hasPrefix("-") && !label.hasSuffix("-")
-        }
+        DomainRules.parseSuffixList(splitDomains)
     }
 
     /// 基础 CIDR 语法校验：X.X.X.X/N，N∈[0,32]，四段 0–255。

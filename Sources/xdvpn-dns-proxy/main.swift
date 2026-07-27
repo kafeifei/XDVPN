@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import XDVPNCore
 
 // MARK: - Signal handling
 
@@ -44,10 +45,12 @@ func loadDomains(from path: String) -> [String] {
         fputs("Failed to read domains file: \(path)\n", stderr)
         exit(1)
     }
-    return content
-        .components(separatedBy: .newlines)
-        .map { $0.trimmingCharacters(in: .whitespaces) }
-        .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+    do {
+        return try DomainRules.parseValidatedConfig(content)
+    } catch {
+        fputs("Invalid domains file: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
 }
 
 // MARK: - Resolver file management
@@ -91,14 +94,19 @@ func utunExists(_ name: String) -> Bool {
 
 // MARK: - Route management
 
-func addRoute(host ip: String, interface utun: String) {
+func addRoute(host ip: String, interface utun: String) -> Bool {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/sbin/route")
     proc.arguments = ["add", "-host", ip, "-interface", utun]
     proc.standardOutput = FileHandle.nullDevice
     proc.standardError = FileHandle.nullDevice
-    try? proc.run()
+    do {
+        try proc.run()
+    } catch {
+        return false
+    }
     proc.waitUntilExit()
+    return proc.terminationReason == .exit && proc.terminationStatus == 0
 }
 
 // MARK: - DNS parsing
@@ -235,7 +243,22 @@ func createUpstreamSocket(vpnDNS: String) -> (Int32, sockaddr_in) {
     upstream.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
     upstream.sin_family = sa_family_t(AF_INET)
     upstream.sin_port = UInt16(53).bigEndian
-    upstream.sin_addr = in_addr(s_addr: inet_addr(vpnDNS))
+    let parsed = vpnDNS.withCString { inet_pton(AF_INET, $0, &upstream.sin_addr) }
+    guard parsed == 1 else {
+        fputs("Invalid upstream DNS address: \(vpnDNS)\n", stderr)
+        close(sock)
+        exit(1)
+    }
+    let connected = withUnsafePointer(to: &upstream) { ptr in
+        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard connected == 0 else {
+        fputs("Failed to connect upstream DNS socket: \(String(cString: strerror(errno)))\n", stderr)
+        close(sock)
+        exit(1)
+    }
 
     return (sock, upstream)
 }
@@ -261,7 +284,7 @@ if let readyFile = config.readyFile {
     try? "\(getpid())\n".write(toFile: readyFile, atomically: true, encoding: .utf8)
 }
 
-var routeCache = Set<String>()
+var routeOwnership = RouteOwnershipTracker<String>()
 var recvBuf = [UInt8](repeating: 0, count: 65535)
 
 // 心跳：用独立 socket 每 30s 往 VPN DNS 发一个 dummy DNS 查询，
@@ -314,19 +337,22 @@ while terminated == 0 {
         }
         guard queryLen > 0 else { continue }
 
-        // Forward query to VPN DNS
-        var upstream = upstreamAddr
-        let sendLen = withUnsafePointer(to: &upstream) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                sendto(upstreamSock, &recvBuf, queryLen, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
+        // The connected UDP socket accepts responses only from the configured DNS peer.
+        let query = Array(recvBuf.prefix(queryLen))
+        let sendLen = send(upstreamSock, &recvBuf, queryLen, 0)
 
         var responseBuf = [UInt8](repeating: 0, count: 65535)
         var responseLen: Int = -1
 
-        if sendLen > 0 {
-            responseLen = recv(upstreamSock, &responseBuf, responseBuf.count, 0)
+        if sendLen == queryLen {
+            // Ignore stale or spoofed packets and accept only a response to this query.
+            for _ in 0..<8 {
+                responseLen = recv(upstreamSock, &responseBuf, responseBuf.count, 0)
+                if responseLen <= 0 { break }
+                let response = Array(responseBuf.prefix(responseLen))
+                if DNSResponseMatcher.matches(query: query, response: response) { break }
+                responseLen = -1
+            }
         }
 
         if responseLen > 0 {
@@ -334,8 +360,7 @@ while terminated == 0 {
                 extractARecordIPs(from: ptr.baseAddress!, length: responseLen)
             }
             for ip in ips {
-                if !routeCache.contains(ip) {
-                    routeCache.insert(ip)
+                _ = routeOwnership.installIfNeeded(ip) {
                     addRoute(host: ip, interface: config.utun)
                 }
             }
