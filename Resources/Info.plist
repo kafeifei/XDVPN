@@ -19,15 +19,19 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.5.7</string>
+	<string>1.5.8</string>
 	<key>CFBundleVersion</key>
-	<string>21</string>
+	<string>22</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>用 Touch ID 解锁 XDVPN 连接权限</string>
+	<key>NSLocationUsageDescription</key>
+	<string>XDVPN 需要读取当前 Wi-Fi 名称，用于按需连接或断开 VPN。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>XDVPN 需要读取当前 Wi-Fi 名称，用于按需连接或断开 VPN。</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© Kafeifei</string>
 </dict>

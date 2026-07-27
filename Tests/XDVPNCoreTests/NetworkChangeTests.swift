@@ -9,6 +9,16 @@ final class NetworkChangeTests: XCTestCase {
         XCTAssertEqual(physicalInterfaceFingerprint([]), "")
     }
 
+    func test_fingerprint_dedupesRepeatedInterfaces() {
+        // NWPath.availableInterfaces 会把同一接口报多次（IPv4/IPv6 各一条），
+        // 且重复次数随主路径切到 utun 而变化。指纹必须对此稳定，
+        // 否则全局模式 def1 路由生效瞬间会被误判为换网（连接→重建死循环）。
+        XCTAssertEqual(physicalInterfaceFingerprint(["en0", "en0"]), "en0")
+        XCTAssertEqual(
+            physicalInterfaceFingerprint(["utun9", "utun9", "en0"]),
+            physicalInterfaceFingerprint(["en0", "en0"]))
+    }
+
     func test_firstObservation_doesNotTrigger() {
         var d = NetworkChangeDetector()
         XCTAssertFalse(d.observe(fingerprint: "en0"))
