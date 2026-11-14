@@ -87,13 +87,15 @@ OpenConnect 以 LGPL-2.1 授权，以动态链接方式使用；源码可从上�
 
 ## 构建 & 发布
 
-本地构建 release 包需要用 Homebrew 提供 OpenConnect 和 ocproxy 作为打包输入；版本范围由 `Vendor/openconnect.lock` 锁定为同一 major/minor、允许 patch 更新。
+正式发布内置的 OpenConnect 和 ocproxy 取自已发布的安装包，来源和校验值固定在 `Vendor/prebuilt-runtime.lock`。这样内置的二进制与上一版一致，支持的最低系统版本不会随构建机变化。
 
 ```bash
-brew install openconnect ocproxy   # 仅构建者需要，用户安装 Release 不需要
-./build.sh                         # 构建 .app
-./build.sh release                 # 构建 + 打包 zip
+scripts/fetch-prebuilt-runtime.sh build/openconnect-runtime
+XDVPN_PREBUILT_RUNTIME_DIR=build/openconnect-runtime ./build.sh           # 构建 .app
+XDVPN_PREBUILT_RUNTIME_DIR=build/openconnect-runtime ./build.sh release   # 构建 + 打包 zip
 ```
+
+也可以完全从头构建：不设 `XDVPN_PREBUILT_RUNTIME_DIR` 时，`./build.sh` 改用本机 Homebrew 的 OpenConnect 和 ocproxy（`brew install openconnect ocproxy`），版本范围由 `Vendor/openconnect.lock` 锁定为同一 major/minor。Homebrew 的二进制只能在不低于构建机的系统版本上运行；低于 App 声明的最低系统版本时 `build.sh` 会报错。
 
 改 `Resources/Info.plist` 版本号，并同步更新 `RELEASE_NOTES.md` 的版本标题和“更新了什么”。
 打 tag 推送后，GitHub Actions 会校验两处版本一致，再自动构建并发布 Release。

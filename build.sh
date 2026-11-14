@@ -52,11 +52,25 @@ if [[ -f Resources/THIRD_PARTY_NOTICES.md ]]; then
     cp Resources/THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 fi
 
-echo "==> vendoring openconnect"
-scripts/vendor-openconnect.sh "$APP"
+ALLOWED_MINOR="$(awk -F= '/^allowed_minor=/{print $2}' Vendor/openconnect.lock)"
 
-echo "==> vendoring ocproxy"
-scripts/vendor-ocproxy.sh "$APP"
+if [[ -n "${XDVPN_PREBUILT_RUNTIME_DIR:-}" ]]; then
+    # 原样内置 scripts/fetch-prebuilt-runtime.sh 取回的运行时（正式发布走这条路）。
+    echo "==> bundling prebuilt openconnect runtime from $XDVPN_PREBUILT_RUNTIME_DIR"
+    for required in VERSION bin/openconnect bin/ocproxy lib; do
+        if [[ ! -e "$XDVPN_PREBUILT_RUNTIME_DIR/$required" ]]; then
+            echo "error: prebuilt runtime is missing $required" >&2
+            exit 1
+        fi
+    done
+    ditto "$XDVPN_PREBUILT_RUNTIME_DIR" "$APP/Contents/Resources/openconnect"
+else
+    echo "==> vendoring openconnect"
+    scripts/vendor-openconnect.sh "$APP"
+
+    echo "==> vendoring ocproxy"
+    scripts/vendor-ocproxy.sh "$APP"
+fi
 
 echo "==> signing bundled openconnect + ocproxy"
 find "$APP/Contents/Resources/openconnect" -type f \( -perm +111 -o -name '*.dylib' \) -exec codesign --force --sign - {} \;
@@ -65,7 +79,43 @@ find "$APP/Contents/Resources/openconnect" -type f \( -perm +111 -o -name '*.dyl
 codesign --force --deep --sign - "$APP"
 
 echo "==> verifying bundled openconnect"
-"$APP/Contents/Resources/openconnect/bin/openconnect" --cafile="$CA_FILE" --version | head -n 1
+OC_VERSION_LINE="$("$APP/Contents/Resources/openconnect/bin/openconnect" --cafile="$CA_FILE" --version | head -n 1)"
+echo "$OC_VERSION_LINE"
+if ! printf '%s\n' "$OC_VERSION_LINE" | grep -qE "v${ALLOWED_MINOR}(\$|[.-])"; then
+    echo "error: bundled openconnect is not ${ALLOWED_MINOR}.x (see Vendor/openconnect.lock)" >&2
+    exit 1
+fi
+
+# 包里每个二进制要求的最低系统版本都不能高于 App 声明支持的版本。
+# 换构建机或换依赖来源时，这一项最容易悄悄变高。
+echo "==> verifying minimum macOS version"
+MIN_OS="$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" Resources/Info.plist)"
+while IFS= read -r -d '' runtime_file; do
+    file "$runtime_file" | grep -q 'Mach-O' || continue
+    required_os="$(otool -l "$runtime_file" | awk '
+        $1 == "cmd" { cmd = $2 }
+        cmd == "LC_BUILD_VERSION" && $1 == "minos" { print $2 }
+        cmd == "LC_VERSION_MIN_MACOSX" && $1 == "version" { print $2 }
+    ')"
+    if [[ -z "$required_os" ]]; then
+        echo "error: cannot read minimum macOS version of $runtime_file" >&2
+        exit 1
+    fi
+    while IFS= read -r version; do
+        if ! awk -v need="$version" -v have="$MIN_OS" 'BEGIN {
+            split(need, n, "."); split(have, h, ".")
+            for (i = 1; i <= 3; i++) {
+                if (n[i] + 0 < h[i] + 0) exit 0
+                if (n[i] + 0 > h[i] + 0) exit 1
+            }
+            exit 0
+        }'; then
+            echo "error: $runtime_file requires macOS $version, but the app declares $MIN_OS" >&2
+            exit 1
+        fi
+    done <<< "$required_os"
+done < <(find "$APP/Contents" -type f -print0)
+echo "all binaries run on macOS $MIN_OS"
 
 echo "==> verifying clean-system portability"
 while IFS= read -r -d '' runtime_file; do
