@@ -129,9 +129,12 @@ SwiftPM 直接生成的 Debug 可执行文件适合迭代 UI 和状态，但不�
    更新窗口。
 5. 明确报告编译了什么、实际操作验证了什么，以及哪些内容没有验证。
 
-只有任务需要 `.app` 安装包时才运行 `./build.sh`。该脚本依赖预期版本的 Homebrew
-构建输入，会内置依赖、签名 App，并替换 `build/` 下的生成物。只有明确需要
-Release zip 时才运行 `./build.sh release`。
+只有任务需要 `.app` 安装包时才运行 `./build.sh`。该脚本会内置依赖、签名 App，并
+替换 `build/` 下的生成物。内置的 OpenConnect 运行时先用
+`scripts/fetch-prebuilt-runtime.sh` 取回，再通过 `XDVPN_PREBUILT_RUNTIME_DIR` 交给
+`build.sh`（来源固定在 `Vendor/prebuilt-runtime.lock`，正式发布走这条路）；不设该
+变量时改用本机 Homebrew 的构建输入。只有明确需要 Release zip 时才运行
+`./build.sh release`。
 
 对于 VPN、helper、路由或 DNS 改动，编译成功和 UI 自动化都不能作为验收证据。
 只有在用户明确允许中断性测试后，才能：

@@ -1,0 +1,4 @@
+# 随 App 发布的 OpenConnect 运行时（openconnect、ocproxy 及其 dylib）的固定来源：
+# 本仓库 CI 构建并发布过的安装包。更换来源时同时更新 url 和 sha256。
+url=https://github.com/kafeifei/XDVPN/releases/download/v1.5.10/XDVPN-v1.5.10.zip
+sha256=2a5ea2f1cee57bedf286bd8e56c80e22dd7c3109d9e324acaa5a364ec8478444

@@ -1,16 +1,18 @@
 name: Release
 
+# 打 tag 时构建并发布；PR 上只跑到打包为止，发版流程坏了能在合入前发现。
 on:
   push:
     tags:
       - 'v*'
+  pull_request:
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -21,6 +23,7 @@ jobs:
         run: swift --version
 
       - name: Validate tag and release notes
+        if: github.event_name == 'push'
         run: |
           version="${GITHUB_REF_NAME#v}"
           plist_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
@@ -33,19 +36,22 @@ jobs:
             END { exit !found }
           ' RELEASE_NOTES.md
 
-      - name: Install OpenConnect and ocproxy for bundling
-        run: |
-          brew update
-          brew install openconnect ocproxy
+      - name: Test
+        run: swift test
+
+      - name: Fetch OpenConnect runtime for bundling
+        run: scripts/fetch-prebuilt-runtime.sh "$RUNNER_TEMP/openconnect-runtime"
 
       - name: Build release zip
-        run: ./build.sh release
+        run: XDVPN_PREBUILT_RUNTIME_DIR="$RUNNER_TEMP/openconnect-runtime" ./build.sh release
 
       - name: Extract version from tag
+        if: github.event_name == 'push'
         id: ver
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           name: XDVPN ${{ github.ref_name }}
