@@ -108,6 +108,7 @@ final class DebugServer {
         ] as [String: Any]
         dict["config"] = [
             "server": vpn.server,
+            "authGroup": vpn.authGroup,
             "user": vpn.user,
             "protocol": vpn.protocolName,
             "splitEnabled": vpn.splitEnabled,
