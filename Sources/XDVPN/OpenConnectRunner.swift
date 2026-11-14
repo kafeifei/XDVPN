@@ -71,12 +71,14 @@ enum OpenConnectRunner {
     static func connect(
         protocolName: String,
         server: String,
+        authGroup: String = "",
         user: String,
         password: String
     ) throws {
         try replaceConnection(
             protocolName: protocolName,
             server: server,
+            authGroup: authGroup,
             user: user,
             password: password
         ) {
@@ -90,6 +92,7 @@ enum OpenConnectRunner {
     static func replaceConnection(
         protocolName: String,
         server: String,
+        authGroup: String = "",
         user: String,
         password: String,
         prepare: () throws -> Void
@@ -100,6 +103,7 @@ enum OpenConnectRunner {
             try connectUnlocked(
                 protocolName: protocolName,
                 server: server,
+                authGroup: authGroup,
                 user: user,
                 password: password
             )
@@ -109,6 +113,7 @@ enum OpenConnectRunner {
     private static func connectUnlocked(
         protocolName: String,
         server: String,
+        authGroup: String,
         user: String,
         password: String
     ) throws {
@@ -125,6 +130,7 @@ enum OpenConnectRunner {
             SudoersInstaller.openconnectWrapperPath,
             "--protocol", protocolName,
             "--user", user,
+        ] + authGroupArguments(authGroup, separate: true) + [
             "--server",
             server,
         ]
@@ -153,7 +159,7 @@ enum OpenConnectRunner {
         {
             throw VPNError.sudoNotConfigured
         }
-        if !failure.isEmpty { throw VPNError.connectFailed(failure) }
+        if !failure.isEmpty { throw VPNError.connectFailed(describeFailure(failure)) }
     }
 
     // MARK: - Cleanup（== Disconnect）
@@ -228,6 +234,7 @@ enum OpenConnectRunner {
     static func connectProxyMode(
         protocolName: String,
         server: String,
+        authGroup: String = "",
         user: String,
         password: String,
         socksPort: UInt16
@@ -260,7 +267,12 @@ enum OpenConnectRunner {
             // openconnect 通过 sh -c 执行 script string，所以 ocproxy 路径要 quote
             "--script", "'\(ocproxyBin)' -D \(socksPort)",
             "--protocol", protocolName,
+            // 和 wrapper 一致：stdin 上那一行只当密码用，其余提问一律不回答。否则登录页多出
+            // 一个下拉框（如认证组）时，openconnect 会把密码读成那一项的答案，再原样印进报错。
+            "--passwd-on-stdin",
+            "--non-inter",
             "--user", user,
+        ] + authGroupArguments(authGroup, separate: false) + [
             server,
         ]
 
@@ -281,7 +293,22 @@ enum OpenConnectRunner {
         try? stdin.fileHandleForWriting.close()
 
         let failure = try waitForConnectionProcess(proc, stderr: stderr)
-        if !failure.isEmpty { throw VPNError.connectFailed(failure) }
+        if !failure.isEmpty { throw VPNError.connectFailed(describeFailure(failure)) }
+    }
+
+    /// 缺认证组或认证组填错时，换成一句列出可选项的话；其他失败原样返回。
+    private static func describeFailure(_ failure: String) -> String {
+        authGroupHint(fromOpenConnectOutput: failure) ?? failure
+    }
+
+    /// 认证组（AnyConnect 的 group、Juniper 的 realm、GlobalProtect 的 gateway）。
+    /// 留空就不传，openconnect 的行为与没有这个字段时一致。
+    /// wrapper 只认分开的两个参数；直接调 openconnect 时用 `=` 形式，
+    /// 这样以 `-` 开头的组名不会被当成另一个选项。
+    private static func authGroupArguments(_ authGroup: String, separate: Bool) -> [String] {
+        let group = authGroup.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !group.isEmpty else { return [] }
+        return separate ? ["--authgroup", group] : ["--authgroup=" + group]
     }
 
     static func cancelPendingConnection() {

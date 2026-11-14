@@ -284,6 +284,7 @@ private struct AccountSection: View {
 
                 VStack(spacing: 8) {
                     FieldRow(icon: "network", placeholder: "服务器地址（如 vpn.example.com）", text: $vpn.server)
+                    FieldRow(icon: "person.2", placeholder: "认证组（可选，登录要选组时填）", text: $vpn.authGroup)
                     FieldRow(icon: "person", placeholder: "用户名", text: $vpn.user)
                     FieldRow(icon: "key", placeholder: "密码", text: $vpn.password, secure: true)
                 }

@@ -7,7 +7,7 @@ enum SudoersInstaller {
     /// 不匹配 → sudoConfigured=false → UI 自动提示"一键配置"覆盖升级。
     // 14 而不是 12/13：v12 已被某 fork 发布过，v13 被 PR #11 占用。取更大的号，
     // 确保这两种安装都会把本机 helper 判为需要升级。
-    static let helperVersion = 14
+    static let helperVersion = 15
 
     static let sudoersPath = "/etc/sudoers.d/xdvpn"
     static let privilegedHelperParentDir = "/Library/PrivilegedHelperTools"
@@ -18,7 +18,7 @@ enum SudoersInstaller {
     /// 不需要单独的 sudoers 条目（调用链：user sudo wrapper → root openconnect → root script）。
     static let routeScriptPath = "\(helperDir)/xdvpn-route-script"
 
-    /// 用户 sudo 直接调。固定 openconnect 参数，只接受协议/用户/服务器三个输入。
+    /// 用户 sudo 直接调。固定 openconnect 参数，只接受协议/用户/服务器和可选的认证组。
     /// 走 sudoers NOPASSWD。
     static let openconnectWrapperPath = "\(helperDir)/xdvpn-openconnect"
 
@@ -125,13 +125,14 @@ enum SudoersInstaller {
         PID_FILE="/tmp/xdvpn.pid"
 
         usage() {
-            echo "usage: xdvpn-openconnect --protocol <protocol> --user <user> --server <server>" >&2
+            echo "usage: xdvpn-openconnect --protocol <protocol> --user <user> [--authgroup <group>] --server <server>" >&2
             exit 64
         }
 
         PROTOCOL=""
         USERNAME=""
         SERVER=""
+        AUTHGROUP=""
 
         while [ "$#" -gt 0 ]; do
             case "$1" in
@@ -146,6 +147,10 @@ enum SudoersInstaller {
               --server)
                 [ "$#" -ge 2 ] || usage
                 SERVER="$2"
+                shift 2 ;;
+              --authgroup)
+                [ "$#" -ge 2 ] && [ -n "$2" ] || usage
+                AUTHGROUP="$2"
                 shift 2 ;;
               *)
                 usage ;;
@@ -172,6 +177,8 @@ enum SudoersInstaller {
             exit 66
         fi
 
+        # 认证组是可选的：不传时 openconnect 的参数与旧版完全一致。
+        # ${AUTHGROUP:+…} 展开成零个或一个参数，组名里的空格不会被拆开。
         exec "$OPENCONNECT" \
             --background \
             --cafile="$CA_FILE" \
@@ -180,6 +187,7 @@ enum SudoersInstaller {
             --protocol="$PROTOCOL" \
             --passwd-on-stdin \
             --user="$USERNAME" \
+            ${AUTHGROUP:+"--authgroup=$AUTHGROUP"} \
             --non-inter \
             -- "$SERVER"
         """#

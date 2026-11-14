@@ -52,6 +52,8 @@ final class VPNController: ObservableObject {
 
     @Published var protocolName: String = "anyconnect"
     @Published var server: String = ""
+    /// 认证组，可选。服务器登录页有「组」下拉框时才需要填。
+    @Published var authGroup: String = ""
     @Published var user: String = ""
     @Published var password: String = ""
     @Published var rememberPassword: Bool = true
@@ -361,6 +363,7 @@ final class VPNController: ObservableObject {
         let d = UserDefaults.standard
         d.set(protocolName, forKey: "xdvpn.protocol")
         d.set(server, forKey: "xdvpn.server")
+        d.set(authGroup, forKey: "xdvpn.authGroup")
         d.set(user, forKey: "xdvpn.user")
         d.set(rememberPassword, forKey: "xdvpn.remember")
         d.set(autoConnectOnLaunch, forKey: "xdvpn.autoConnectOnLaunch")
@@ -381,6 +384,7 @@ final class VPNController: ObservableObject {
         let d = UserDefaults.standard
         protocolName = d.string(forKey: "xdvpn.protocol") ?? "anyconnect"
         server = d.string(forKey: "xdvpn.server") ?? ""
+        authGroup = d.string(forKey: "xdvpn.authGroup") ?? ""
         user = d.string(forKey: "xdvpn.user") ?? ""
         rememberPassword = d.object(forKey: "xdvpn.remember") as? Bool ?? true
         autoConnectOnLaunch = d.bool(forKey: "xdvpn.autoConnectOnLaunch")
@@ -918,7 +922,7 @@ final class VPNController: ObservableObject {
         let mode = runningMode
         appLog(.info, silent ? "开始自动重连（\(mode.label)）" : "用户发起连接（\(mode.label)）")
 
-        let p = protocolName, s = server, u = user, pw = password
+        let p = protocolName, s = server, g = authGroup, u = user, pw = password
         let remember = rememberPassword
         let account = keychainAccount
         let proxyMode = mode == .proxy
@@ -949,12 +953,14 @@ final class VPNController: ObservableObject {
                     if rootCleanupRequired { try OpenConnectRunner.cleanup() }
                     guard !Task.isCancelled else { return }
                     try OpenConnectRunner.connectProxyMode(
-                        protocolName: p, server: s, user: u, password: pw, socksPort: socksPort
+                        protocolName: p, server: s, authGroup: g, user: u, password: pw,
+                        socksPort: socksPort
                     )
                 } else {
                     try OpenConnectRunner.replaceConnection(
                         protocolName: p,
                         server: s,
+                        authGroup: g,
                         user: u,
                         password: pw
                     ) {
